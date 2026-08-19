@@ -4,8 +4,9 @@ name: Docker Image CI
 
 on:
   push:
-    tags:
-      - 'v*'   # triggers on version tags like v1.0
+    branches: [ '**' ]   # trigger on any branch push
+    tags: [ 'v*' ]   # still trigger on version tags like v1.0
+  pull_request:
 
 jobs:
   build-and-push:
@@ -13,6 +14,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      releases: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,15 +32,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      - name: Build Docker image
         uses: docker/build-push-action@v5
         with:
           context: ./
-          push: true
+          push: ${{ startsWith(github.ref, 'refs/tags/') }}
           tags: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ github.ref_name }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
