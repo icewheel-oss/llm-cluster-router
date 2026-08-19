@@ -1,0 +1,109 @@
+# =============================================================================
+# LLM Cluster Router Configuration Example
+# =============================================================================
+
+# Server settings for the proxy itself
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+# Connection timeouts in seconds
+timeouts:
+  primary: 1.0  # Timeout for primary Ethernet links (fail over fast)
+  fallback: 3.0 # Timeout for backup WiFi links
+  request: 120.0 # Timeout for actual generation calls
+
+# General settings
+general_settings:
+  health_check_interval: 30 # Check node models cache every 30 seconds to reduce health check log spam
+
+# Routing settings
+routing:
+  mode: "smart"       # Options: 'random', 'sticky', 'smart'
+  sticky_header: "x-session-id" # Header used to establish session stickiness
+
+# Capabilities-based routing settings
+capabilities_routing:
+  enabled: true
+
+# Catalog of model capabilities to assist in dynamic routing fallback.
+# If a request requires a capability (e.g. vision, tool_calling, structured_output)
+# that the client-requested model does not support, the gateway automatically
+# reroutes to an active node serving a model that does.
+model_capabilities:
+  - name_pattern: "thinking"
+    vision: false
+    tool_calling: false
+    structured_output: false
+
+  - name_pattern: "r1"
+    vision: false
+    tool_calling: false
+    structured_output: false
+
+  - name_pattern: "vl"
+    vision: true
+    tool_calling: true
+    structured_output: true
+
+  - name_pattern: "step"
+    vision: true
+    tool_calling: true
+    structured_output: true
+
+  - name_pattern: "qwen"
+    vision: false
+    tool_calling: true
+    structured_output: true
+
+  - name_pattern: "deepseek"
+    vision: false
+    tool_calling: true
+    structured_output: true
+
+  - name_pattern: "minimax"
+    vision: false
+    tool_calling: true
+    structured_output: true
+
+  - name_pattern: "glm"
+    vision: false
+    tool_calling: true
+    structured_output: true
+
+  - name_pattern: "nemotron"
+    vision: false
+    tool_calling: true
+    structured_output: true
+
+  - name_pattern: "gemma"
+    vision: false
+    tool_calling: true
+    structured_output: true
+
+  - name_pattern: "inkling"
+    vision: false
+    tool_calling: true
+    structured_output: true
+
+  - name_pattern: "gpt-oss"
+    vision: false
+    tool_calling: true
+    structured_output: true
+
+  - name_pattern: "llama"
+    vision: false
+    tool_calling: true
+    structured_output: true
+
+# List of LLM Cluster Nodes.
+# For each node, the proxy always attempts connections via the 'primary' address.
+# If the primary connection fails or times out, it automatically fails over to the 'backup' address.
+nodes:
+  - name: "node-1"
+    primary: "http://10.0.0.11:8000/v1"
+    backup: "http://10.0.0.21:8000/v1"
+
+  - name: "node-2"
+    primary: "http://10.0.0.12:8000/v1"
+    backup: "http://10.0.0.22:8000/v1"
