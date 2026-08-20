@@ -569,7 +569,12 @@ def sanitize_messages(messages: list) -> bool:
                             func["arguments"] = json.loads(arguments)
                             modified = True
                         except Exception:
-                            pass
+                            # arguments is not valid JSON (e.g. empty string, malformed).
+                            # Replace with empty dict so vLLM Jinja templater gets a valid mapping
+                            # instead of crashing with "Expecting value" 400 Bad Request.
+                            logger.warning(f"tool_call arguments could not be parsed as JSON (value={repr(arguments)!r}). Replacing with empty dict.")
+                            func["arguments"] = {}
+                            modified = True
                             
     return modified
 
