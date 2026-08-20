@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   llm-router:
-    build: .
+    image: ghcr.io/icewheel-oss/llm-cluster-router:latest
     container_name: llm-cluster-router-standalone
     restart: unless-stopped
     ports:
