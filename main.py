@@ -565,15 +565,23 @@ def sanitize_messages(messages: list) -> bool:
                     arguments = func.get("arguments")
                     if isinstance(arguments, str):
                         try:
-                            # Convert stringified JSON arguments to dictionary
-                            func["arguments"] = json.loads(arguments)
-                            modified = True
+                            # Validate it's parseable JSON - vLLM requires arguments to be
+                            # a valid JSON string (the OpenAI spec mandates a string, not a dict)
+                            json.loads(arguments)
                         except Exception:
                             # arguments is not valid JSON (e.g. empty string, malformed).
-                            # Replace with empty dict so vLLM Jinja templater gets a valid mapping
+                            # Replace with '{}' string so vLLM receives a valid JSON string
                             # instead of crashing with "Expecting value" 400 Bad Request.
-                            logger.warning(f"tool_call arguments could not be parsed as JSON (value={repr(arguments)!r}). Replacing with empty dict.")
-                            func["arguments"] = {}
+                            logger.warning(f"tool_call arguments is not valid JSON (value={repr(arguments)!r}). Replacing with '{{}}' string.")
+                            func["arguments"] = "{}"
+                            modified = True
+                    elif not isinstance(arguments, str):
+                        # arguments is already a dict/object - serialize it back to a JSON string
+                        try:
+                            func["arguments"] = json.dumps(arguments)
+                            modified = True
+                        except Exception:
+                            func["arguments"] = "{}"
                             modified = True
                             
     return modified
