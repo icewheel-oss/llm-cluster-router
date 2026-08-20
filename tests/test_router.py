@@ -526,7 +526,7 @@ def test_sanitize_tools():
 
 
 def test_sanitize_messages():
-    """Test that stringified tool call arguments in messages are converted to dicts."""
+    """Test that tool call arguments in messages are sanitized as valid JSON strings."""
     messages = [
         {
             "role": "user",
@@ -540,7 +540,7 @@ def test_sanitize_messages():
                     "type": "function",
                     "function": {
                         "name": "get_weather",
-                        "arguments": '{"city": "Paris", "units": "metric"}'
+                        "arguments": ""
                     }
                 }
             ]
@@ -549,9 +549,9 @@ def test_sanitize_messages():
     modified = main.sanitize_messages(messages)
     assert modified is True
     args = messages[1]["tool_calls"][0]["function"]["arguments"]
-    assert isinstance(args, dict)
-    assert args["city"] == "Paris"
-    assert args["units"] == "metric"
+    assert isinstance(args, str)
+    assert args == "{}"
+
 
 
 def test_has_image_content():
@@ -672,6 +672,37 @@ async def test_stream_and_log_cancelled(mocker):
             
     # Verify aclose was successfully called
     assert aclose_called is True
+
+
+
+def test_prefix_cache_routing():
+    """Test system prompt prefix hashing and cache stickiness."""
+    payload = {
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant specialized in stock news analysis and portfolio risk assessment."},
+            {"role": "user", "content": "Analyze AAPL"}
+        ],
+        "model": "deepseek-v4"
+    }
+    hash_val = main.get_prefix_hash(payload)
+    assert len(hash_val) > 0
+    
+    # Store cache entry
+    main.PREFIX_CACHE[hash_val] = ("node-3", main.time.time())
+    c_node, c_time = main.PREFIX_CACHE.get(hash_val, (None, 0))
+    assert c_node == "node-3"
+
+
+def test_rate_limiting():
+    """Test client rate limiting quota enforcement."""
+    main.CONFIG["rate_limiting"] = {"enabled": True, "requests_per_minute": 2}
+    main.RATE_LIMIT_CACHE.clear()
+
+    client = "user-test"
+    assert main.check_rate_limit(client) is True
+    assert main.check_rate_limit(client) is True
+    assert main.check_rate_limit(client) is False
+
 
 
 

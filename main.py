@@ -81,24 +81,141 @@ async def fetch_node_models(node: Dict[str, str]) -> List[str]:
     return []
 
 
+# Cache of active models per node: {node_name: [model_id_1, model_id_2, ...]}
+NODE_MODELS_CACHE: Dict[str, List[str]] = {}
+NODE_TEMP_CACHE: Dict[str, float] = {}
+
+# Prefix KV-Cache tracking: {prefix_hash: (node_name, timestamp)}
+PREFIX_CACHE: Dict[str, tuple] = {}
+
+# Rate limiting tracking: {client_identifier: [timestamp_1, timestamp_2, ...]}
+RATE_LIMIT_CACHE: Dict[str, List[float]] = {}
+
+CACHE_LOCK = asyncio.Lock()
+
+
+def get_prefix_hash(json_data: dict) -> str:
+    """Extracts system prompt or initial prompt prefix and returns a CRC32 hash string.
+    Returns empty string if prefix length is below min_prefix_length.
+    """
+    prefix_cfg = CONFIG.get("prefix_cache_routing", {})
+    if not prefix_cfg.get("enabled", True):
+        return ""
+
+    min_len = prefix_cfg.get("min_prefix_length", 50)
+    messages = json_data.get("messages")
+    prefix_text = ""
+
+    if isinstance(messages, list) and messages:
+        # Check system message first
+        for msg in messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                prefix_text = str(msg.get("content", ""))
+                break
+        # Fall back to first user message if no system message
+        if not prefix_text and isinstance(messages[0], dict):
+            prefix_text = str(messages[0].get("content", ""))
+    elif "prompt" in json_data:
+        prefix_text = str(json_data.get("prompt", ""))
+
+    if len(prefix_text) >= min_len:
+        return f"{zlib.crc32(prefix_text.encode('utf-8')):x}"
+
+    return ""
+
+
+def check_rate_limit(client_id: str) -> bool:
+    """Checks if client exceeds configured requests per minute limit.
+    Returns True if request is ALLOWED, False if RATE LIMITED.
+    """
+    rl_cfg = CONFIG.get("rate_limiting", {})
+    if not rl_cfg.get("enabled", False):
+        return True
+
+    limit = rl_cfg.get("requests_per_minute", 60)
+    now = time.time()
+
+    asyncio.run_coroutine_threadsafe
+
+    history = RATE_LIMIT_CACHE.get(client_id, [])
+    # Keep timestamps within the last 60 seconds
+    history = [t for t in history if now - t < 60.0]
+    
+    if len(history) >= limit:
+        return False
+
+    history.append(now)
+    RATE_LIMIT_CACHE[client_id] = history
+    return True
+
+
+
+async def fetch_node_temperature(node: Dict[str, str]) -> float:
+    """Attempts to fetch node hardware/GPU temperature via node-exporter on port 9100.
+    Returns maximum temperature in Celsius or None if telemetry/exporter is unavailable.
+    """
+    thermal_cfg = CONFIG.get("thermal_routing", {})
+    if not thermal_cfg.get("enabled", True):
+        return None
+
+    # Derive host/IP from primary node URL
+    primary_url = node.get("primary", "")
+    try:
+        host = primary_url.split("://")[-1].split(":")[0]
+    except Exception:
+        return None
+
+    port = thermal_cfg.get("exporter_port", 9100)
+    metrics_url = f"http://{host}:{port}/metrics"
+
+    try:
+        resp = await CLIENT.get(metrics_url, timeout=1.5)
+        if resp.status_code == 200:
+            temps = []
+            for line in resp.text.splitlines():
+                if line.startswith("node_hwmon_temp_celsius{") or line.startswith("node_thermal_zone_temp{"):
+                    try:
+                        val = float(line.split()[-1])
+                        # Filter out invalid sensor sentinel values (e.g. >150 or <=0)
+                        if 0 < val < 150:
+                            temps.append(val)
+                    except ValueError:
+                        continue
+            if temps:
+                return max(temps)
+    except Exception:
+        pass
+    return None
+
+
 async def update_models_cache_loop():
-    """Background task to periodically refresh the active models list from all nodes."""
+    """Background task to periodically refresh the active models list and thermal metrics from all nodes."""
     while True:
         try:
             tasks = [fetch_node_models(node) for node in CONFIG["nodes"]]
+            temp_tasks = [fetch_node_temperature(node) for node in CONFIG["nodes"]]
+            
             results = await asyncio.gather(*tasks)
+            temp_results = await asyncio.gather(*temp_tasks)
             
             async with CACHE_LOCK:
-                for node, models in zip(CONFIG["nodes"], results):
+                for node, models, temp in zip(CONFIG["nodes"], results, temp_results):
                     NODE_MODELS_CACHE[node["name"]] = models
+                    if temp is not None:
+                        NODE_TEMP_CACHE[node["name"]] = temp
+                    elif node["name"] in NODE_TEMP_CACHE:
+                        del NODE_TEMP_CACHE[node["name"]]
+
                     if models:
-                        logger.debug(f"Node {node['name']} active models: {models}")
+                        temp_str = f" ({temp:.1f}°C)" if temp is not None else ""
+                        logger.debug(f"Node {node['name']}{temp_str} active models: {models}")
                     else:
                         logger.debug(f"Node {node['name']} is currently offline or has no models loaded.")
         except Exception as e:
             logger.error(f"Error in models cache update loop: {str(e)}")
             
         await asyncio.sleep(CONFIG["general_settings"].get("health_check_interval", 10))
+
 
 
 @asynccontextmanager
@@ -565,11 +682,24 @@ def sanitize_messages(messages: list) -> bool:
                     arguments = func.get("arguments")
                     if isinstance(arguments, str):
                         try:
-                            # Convert stringified JSON arguments to dictionary
-                            func["arguments"] = json.loads(arguments)
+                            # Validate it's parseable JSON - vLLM requires arguments to be
+                            # a valid JSON string (the OpenAI spec mandates a string, not a dict)
+                            json.loads(arguments)
+                        except Exception:
+                            # arguments is not valid JSON (e.g. empty string, malformed).
+                            # Replace with '{}' string so vLLM receives a valid JSON string
+                            # instead of crashing with "Expecting value" 400 Bad Request.
+                            logger.warning(f"tool_call arguments is not valid JSON (value={repr(arguments)!r}). Replacing with '{{}}' string.")
+                            func["arguments"] = "{}"
+                            modified = True
+                    elif not isinstance(arguments, str):
+                        # arguments is already a dict/object - serialize it back to a JSON string
+                        try:
+                            func["arguments"] = json.dumps(arguments)
                             modified = True
                         except Exception:
-                            pass
+                            func["arguments"] = "{}"
+                            modified = True
                             
     return modified
 
@@ -717,6 +847,11 @@ async def handle_llm_request(request: Request):
     prompt = parse_request_prompt(body)
     trace_id = parse_trace_id(headers)
     
+    # Check rate limits (per IP / Auth user)
+    client_id = auth_user if auth_user != "anonymous" else client_ip
+    if not check_rate_limit(client_id):
+        raise HTTPException(status_code=429, detail=f"Rate limit exceeded for client '{client_id}'. Max allowed requests per minute reached.")
+
     # Extract model parameter
     try:
         json_data = await request.json()
@@ -724,6 +859,21 @@ async def handle_llm_request(request: Request):
         is_stream = json_data.get("stream", False)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    # Check KV Prefix Cache hash
+    prefix_hash = get_prefix_hash(json_data)
+    cached_prefix_node = None
+    if prefix_hash:
+        prefix_cfg = CONFIG.get("prefix_cache_routing", {})
+        ttl = prefix_cfg.get("ttl_seconds", 600)
+        now = time.time()
+        async with CACHE_LOCK:
+            if prefix_hash in PREFIX_CACHE:
+                c_node, c_time = PREFIX_CACHE[prefix_hash]
+                if now - c_time < ttl:
+                    cached_prefix_node = c_node
+                else:
+                    del PREFIX_CACHE[prefix_hash]
         
     if not requested_model:
         raise HTTPException(status_code=400, detail="Missing 'model' parameter in request body")
@@ -816,7 +966,18 @@ async def handle_llm_request(request: Request):
     routing_mode = routing_config.get("mode", "smart").lower()
     sticky_header = routing_config.get("sticky_header", "x-session-id").lower()
 
-    if routing_mode == "smart":
+    # Prefix Cache Routing check: if this prefix hash was previously served by an active eligible node, prefer that node!
+    prefix_matched_node = None
+    if cached_prefix_node:
+        for n in eligible_nodes:
+            if n["name"] == cached_prefix_node:
+                prefix_matched_node = n
+                break
+
+    if prefix_matched_node:
+        selected_node = prefix_matched_node
+        logger.info(f"Prefix KV-cache hit for hash '{prefix_hash}'. Routing to warm cache node '{selected_node['name']}'")
+    elif routing_mode == "smart":
         # Check if a sticky key is present. If yes, route stickily. If not, route to least loaded.
         sticky_key = headers.get(sticky_header)
         if not sticky_key:
@@ -831,12 +992,42 @@ async def handle_llm_request(request: Request):
             selected_node = sorted_nodes[hash_val % len(sorted_nodes)]
             logger.info(f"Smart routing selected sticky node {selected_node['name']} for key '{sticky_key}'")
         else:
-            # Shuffle list to randomly break ties on identical loads
-            shuffled_nodes = list(eligible_nodes)
+            # Thermal-aware least-loaded routing
+            thermal_cfg = CONFIG.get("thermal_routing", {})
+            thermal_enabled = thermal_cfg.get("enabled", True)
+            max_temp = thermal_cfg.get("max_temp_celsius", 82.0)
+
+            candidate_nodes = list(eligible_nodes)
+            if thermal_enabled:
+                # Filter out nodes exceeding max thermal ceiling if cool candidates are available
+                cool_nodes = [n for n in candidate_nodes if NODE_TEMP_CACHE.get(n["name"], 0) < max_temp]
+                if cool_nodes:
+                    candidate_nodes = cool_nodes
+                else:
+                    logger.warning(f"All candidate nodes for '{requested_model}' exceed thermal limit ({max_temp}°C). Routing to coolest available.")
+
+            shuffled_nodes = list(candidate_nodes)
             random.shuffle(shuffled_nodes)
-            selected_node = min(shuffled_nodes, key=lambda n: ACTIVE_REQUESTS.get(n["name"], 0))
+
+            # Sort by active requests, then tie-break by lower temperature if telemetry is present
+            selected_node = min(
+                shuffled_nodes,
+                key=lambda n: (
+                    ACTIVE_REQUESTS.get(n["name"], 0),
+                    NODE_TEMP_CACHE.get(n["name"], 0)
+                )
+            )
             active_count = ACTIVE_REQUESTS.get(selected_node["name"], 0)
-            logger.info(f"Smart routing selected least-loaded node {selected_node['name']} (active: {active_count})")
+            node_temp = NODE_TEMP_CACHE.get(selected_node["name"])
+            temp_info = f", temp: {node_temp:.1f}°C" if node_temp is not None else ""
+            logger.info(f"Smart routing selected node {selected_node['name']} (active: {active_count}{temp_info})")
+
+    # Record prefix cache location for future requests
+    if prefix_hash and selected_node:
+        async with CACHE_LOCK:
+            PREFIX_CACHE[prefix_hash] = (selected_node["name"], time.time())
+
+
     elif routing_mode == "sticky":
         # Find sticky key: session-id header -> auth-user -> client-ip
         sticky_key = headers.get(sticky_header)

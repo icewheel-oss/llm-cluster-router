@@ -1,13 +1,30 @@
-version: '3.8'
-
 services:
   llm-router:
-    build: .
+    # ---------------------------------------------------------------------
+    # OPTION A — Pull pre-built image from GitHub Container Registry (GHCR)
+    #   Use this for production deployments or when you just want to run the
+    #   proxy without modifying source code. The `latest` tag always reflects
+    #   the most recent commit on the `master` branch.
+    #   Flip to this by commenting out the `build` line below and
+    #   uncommenting this `image` line.
+    # ---------------------------------------------------------------------
+    image: ghcr.io/icewheel-oss/llm-cluster-router:latest
+
+    # ---------------------------------------------------------------------
+    # OPTION B — Build locally from source
+    #   Use this during development or when you want to test local changes
+    #   before pushing. Comment out the `image` line above and uncomment
+    #   `build` below, then run: docker compose up --build
+    # ---------------------------------------------------------------------
+    # build: .
+
     container_name: llm-cluster-router-standalone
     restart: unless-stopped
     ports:
       - "8000:8000"
     volumes:
+      # Mount your config.yaml at runtime — never bake secrets into the image.
+      # Copy config.example.yaml to config.yaml and fill in your node addresses.
       - ./config.yaml:/app/config.yaml:ro
     environment:
       - CONFIG_PATH=config.yaml

@@ -22,6 +22,25 @@ routing:
   mode: "smart"       # Options: 'random', 'sticky', 'smart'
   sticky_header: "x-session-id" # Header used to establish session stickiness
 
+# Thermal routing & monitoring options (optional)
+thermal_routing:
+  enabled: true
+  max_temp_celsius: 82.0   # Thermal ceiling: nodes exceeding this temp are deprioritized
+  exporter_port: 9100     # Default prometheus-node-exporter port
+
+# KV Prefix Cache-Aware Routing (optional)
+prefix_cache_routing:
+  enabled: true
+  min_prefix_length: 50   # Minimum characters in system prompt/prefix to activate cache routing
+  ttl_seconds: 600        # Cache entry TTL (10 minutes)
+
+# Rate Limiting & Token Quotas (optional)
+rate_limiting:
+  enabled: false          # Disabled by default, enable to enforce client quotas
+  requests_per_minute: 60 # Max requests per minute per IP / Auth User
+
+
+
 # Capabilities-based routing settings
 capabilities_routing:
   enabled: true
