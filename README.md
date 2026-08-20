@@ -181,53 +181,48 @@ Every request writes a single-line JSON log (`AUDIT_LOG: {...}`) containing:
 
 ## 🔍 Kibana Query Reference (KQL)
 
-Use the following queries in Kibana **Discover** (under the `llm-audit-logs-*` data view) to inspect your cluster activity:
+Use the following queries in Kibana **Discover** to inspect cluster activity and debug failures across indices:
 
-### 1. Find Misconfigured Clients (Model Rewrites)
-Find cases where a client requested an invalid or offline model (e.g. `gpt-4o`) and the proxy auto-corrected it to a loaded fallback model:
+### 1. Find Gateway Errors (HTTP 4xx / 5xx)
+Search for client or server errors routed by the gateway (`llm-audit-logs-*` index):
 ```text
-audit.rewritten : true
+status_code >= 400
+```
+Search specifically for gateway timeout errors (502 / 504):
+```text
+status_code : 502 OR status_code : 504
 ```
 
-### 2. Trace App Context / Transaction Correlation
-Track a specific transaction from your client application (which passes standard `traceparent` or `X-Request-ID` headers) to see the exact prompt and response generated:
+### 2. Find Misconfigured Clients (Model Rewrites)
+Find cases where a client requested an invalid or offline model (e.g. `gpt-4o`) and the proxy auto-corrected it to an active loaded model:
 ```text
-audit.trace_id : "4bf92f3577b34da6a3ce929d0e0e4736"
+rewritten : true
 ```
 
-### 3. Track a Specific Completion ID
-Fetch audit data for a single completions result:
+### 3. Trace App Context / Transaction Correlation
+Track a specific transaction from your client application (which passes standard `traceparent` or `X-Request-ID` headers) to inspect prompt and completion details:
 ```text
-audit.completion_id : "chatcmpl-8bc0475f35bc908c"
+trace_id : "4bf92f3577b34da6a3ce929d0e0e4736"
 ```
 
-### 4. Audit Prompt & Response Content
-Search for prompts containing specific keywords (e.g., "error"):
+### 4. GPU Engine Crashes & Out-Of-Memory Errors
+Search for vLLM / engine failures (`vllm-logs-*` index):
 ```text
-audit.prompt : *error*
-```
-Search for responses containing specific code snippets or topics (e.g., "Docker"):
-```text
-audit.response : *Docker*
+message : *CUDA* OR message : *Out of memory* OR message : *OOM* OR message : *Traceback*
 ```
 
 ### 5. Check Latency Spikes
 Find requests that experienced latency higher than 10 seconds:
 ```text
-audit.latency_ms > 10000
+latency_ms > 10000
 ```
 
-### 6. Filter by Client User
-Filter logs to see requests sent by a specific user (authenticated via Basic Auth):
-```text
-audit.auth_user : "demouser"
-```
-
-### 7. Filter by Target Node
+### 6. Filter by Target Node
 Inspect all completions handled by a specific cluster GPU node (e.g., node-4):
 ```text
-audit.node : "node-4"
+node : "node-4"
 ```
+
 
 ---
 
