@@ -1119,11 +1119,12 @@ async def handle_llm_request(request: Request):
                 else:
                     logger.warning(f"All candidate nodes for '{requested_model}' exceed thermal limit ({max_temp}°C). Routing to coolest available.")
 
-            # Sort by active requests, then tie-break by lower temperature if telemetry is present
+            # Sort by active requests, then node priority (lower = higher priority), then lower temperature
             selected_node = min(
                 candidate_nodes,
                 key=lambda n: (
                     ACTIVE_REQUESTS.get(n["name"], 0),
+                    n.get("priority", 1),
                     NODE_TEMP_CACHE.get(n["name"], 0)
                 )
             )

@@ -407,6 +407,7 @@ async def test_handle_llm_request_smart_routing(mocker):
         "node-1": 3,
         "node-2": 0
     }
+    main.PREFIX_CACHE.clear()
 
     mock_resp = StreamingResponse(
         AsyncIterator([b'{}']),
