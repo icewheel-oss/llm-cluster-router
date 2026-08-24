@@ -262,4 +262,13 @@ docker stop -t 900 llm-cluster-router && docker rm llm-cluster-router
 docker rename llm-cluster-router-green llm-cluster-router
 ```
 
+---
+
+## ⚖️ Trademarks & Legal Disclaimer
+
+All product names, logos, brands, trademarks, and registered trademarks mentioned or referenced in this project (including but not limited to **DeepSeek**, **Qwen**, **vLLM**, **Llama**, **Ollama**, **OpenAI**, **NVIDIA**, **Apple**, **Apple Silicon**, **MLX**, **Grafana**, **Prometheus**, **Elasticsearch**, **Kibana**, **Logstash**, and **Portainer**) are the property of their respective trademark holders.
+
+Use of these third-party names, logos, or marks does not imply any affiliation with, endorsement by, or sponsorship by their respective owners. **LLM Cluster Router** is an independent open-source proxy project designed solely for routing OpenAI-compatible HTTP requests across self-hosted inference infrastructure.
+
+
 
