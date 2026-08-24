@@ -61,9 +61,10 @@ async def test_fetch_node_models_primary_success(mocker):
     node = main.CONFIG["nodes"][0]
     models = await main.fetch_node_models(node)
     
-    assert models == ["model-a"]
+    assert models == [{"id": "model-a"}]
     mock_client.get.assert_called_once_with(
         "http://192.168.86.221:8000/v1/models",
+        headers={},
         timeout=0.1
     )
 
@@ -82,12 +83,12 @@ async def test_fetch_node_models_failover_to_backup(mocker):
     node = main.CONFIG["nodes"][0]
     models = await main.fetch_node_models(node)
     
-    assert models == ["model-b"]
+    assert models == [{"id": "model-b"}]
     assert mock_client.get.call_count == 2
     
     # Verify both calls were made to correct URLs
-    mock_client.get.assert_any_call("http://192.168.86.221:8000/v1/models", timeout=0.1)
-    mock_client.get.assert_any_call("http://192.168.86.211:8000/v1/models", timeout=0.2)
+    mock_client.get.assert_any_call("http://192.168.86.221:8000/v1/models", headers={}, timeout=0.1)
+    mock_client.get.assert_any_call("http://192.168.86.211:8000/v1/models", headers={}, timeout=0.2)
 
 
 async def test_fetch_node_models_all_fail(mocker):
@@ -390,8 +391,8 @@ async def test_handle_llm_request_smart_routing(mocker):
     """Test that smart routing routes stickily when session ID is present, and to the least loaded when absent."""
     # Cache setup: deepseek model is active on both node-1 and node-2
     main.NODE_MODELS_CACHE = {
-        "node-1": ["deepseek-ai/DeepSeek-V4-Flash-0731"],
-        "node-2": ["deepseek-ai/DeepSeek-V4-Flash-0731"]
+        "node-1": [{"id": "deepseek-ai/DeepSeek-V4-Flash-0731", "max_model_len": 131072}],
+        "node-2": [{"id": "deepseek-ai/DeepSeek-V4-Flash-0731", "max_model_len": 131072}]
     }
     main.CONFIG["nodes"] = [
         {"name": "node-1", "primary": "http://192.168.86.221:8000/v1"},
@@ -406,6 +407,7 @@ async def test_handle_llm_request_smart_routing(mocker):
         "node-1": 3,
         "node-2": 0
     }
+    main.PREFIX_CACHE.clear()
 
     mock_resp = StreamingResponse(
         AsyncIterator([b'{}']),
@@ -702,6 +704,86 @@ def test_rate_limiting():
     assert main.check_rate_limit(client) is True
     assert main.check_rate_limit(client) is True
     assert main.check_rate_limit(client) is False
+
+
+async def test_fetch_node_models_custom_headers(mocker):
+    """Test fetch_node_models sends custom node headers if specified in config."""
+    mock_client = AsyncMock()
+    mock_response = MagicMock(status_code=200)
+    mock_response.json.return_value = {"data": [{"id": "peer-model", "max_model_len": 262144}]}
+    mock_client.get.return_value = mock_response
+    main.CLIENT = mock_client
+
+    node = {
+        "name": "peer-node",
+        "primary": "https://llm.khatkar.net/v1",
+        "headers": {"Authorization": "Bearer peer-token-secret"}
+    }
+    models = await main.fetch_node_models(node)
+    
+    assert models == [{"id": "peer-model", "max_model_len": 262144}]
+    mock_client.get.assert_called_once_with(
+        "https://llm.khatkar.net/v1/models",
+        headers={"Authorization": "Bearer peer-token-secret"},
+        timeout=0.1
+    )
+
+
+async def test_get_models_max_context_aggregation():
+    """Test /v1/models aggregates maximum context_window across multiple nodes."""
+    main.NODE_MODELS_CACHE = {
+        "node-local": [{"id": "Qwen/Qwen3.8-27B-FP8", "max_model_len": 131072}],
+        "node-peer": [{"id": "Qwen/Qwen3.8-27B-FP8", "max_model_len": 262144}]
+    }
+
+    res = await main.get_models()
+    assert "data" in res
+    assert len(res["data"]) == 1
+    model_info = res["data"][0]
+    assert model_info["id"] == "Qwen/Qwen3.8-27B-FP8"
+    assert model_info["max_model_len"] == 262144
+    assert model_info["context_window"] == 262144
+
+
+async def test_context_window_routing_filter(mocker):
+    """Test smart routing excludes small-context nodes when estimated request token length exceeds node limit."""
+    # node-1 has 131k context limit, node-2 has 262k context limit
+    main.NODE_MODELS_CACHE = {
+        "node-1": [{"id": "Qwen/Qwen3.8-27B-FP8", "max_model_len": 131072}],
+        "node-2": [{"id": "Qwen/Qwen3.8-27B-FP8", "max_model_len": 262144}]
+    }
+    main.CONFIG["nodes"] = [
+        {"name": "node-1", "primary": "http://192.168.86.221:8000/v1"},
+        {"name": "node-2", "primary": "http://192.168.86.222:8000/v1"}
+    ]
+    main.CONFIG["routing"] = {"mode": "smart"}
+    main.ACTIVE_REQUESTS = {"node-1": 0, "node-2": 0}
+
+    mock_resp = StreamingResponse(
+        AsyncIterator([b'{}']),
+        status_code=200,
+        headers={"content-type": "application/json"}
+    )
+    mocker.patch("main.forward_request", return_value=mock_resp)
+
+    # Large request: prompt is ~600,000 chars (150,000 tokens) + max_tokens 2048 = 152,048 tokens
+    # Node-1 (131k) should be excluded, routing ONLY to Node-2 (262k)
+    large_prompt = "x" * 600000
+    mock_req = MagicMock(spec=Request)
+    mock_req.url = MagicMock()
+    mock_req.url.path = "/v1/chat/completions"
+    mock_req.method = "POST"
+    mock_req.headers = {"content-type": "application/json"}
+    mock_req.client = MagicMock()
+    mock_req.client.host = "127.0.0.1"
+    mock_req.body = AsyncMock(return_value=f'{{"model": "Qwen/Qwen3.8-27B-FP8", "messages": [{{"role": "user", "content": "{large_prompt}"}}]}}'.encode())
+    mock_req.json = AsyncMock(return_value={"model": "Qwen/Qwen3.8-27B-FP8", "messages": [{"role": "user", "content": large_prompt}]})
+
+    resp = await main.handle_llm_request(mock_req)
+    assert resp.status_code == 200
+    args, kwargs = main.forward_request.call_args
+    assert kwargs["node"]["name"] == "node-2"
+
 
 
 

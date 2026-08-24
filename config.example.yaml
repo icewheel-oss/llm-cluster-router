@@ -54,16 +54,19 @@ model_capabilities:
     vision: false
     tool_calling: false
     structured_output: false
+    context_window: 131072
 
   - name_pattern: "r1"
     vision: false
     tool_calling: false
     structured_output: false
+    context_window: 131072
 
   - name_pattern: "vl"
     vision: true
     tool_calling: true
     structured_output: true
+    context_window: 262144
 
   - name_pattern: "step"
     vision: true
@@ -74,11 +77,13 @@ model_capabilities:
     vision: false
     tool_calling: true
     structured_output: true
+    context_window: 262144
 
   - name_pattern: "deepseek"
     vision: false
     tool_calling: true
     structured_output: true
+    context_window: 131072
 
   - name_pattern: "minimax"
     vision: false

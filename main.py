@@ -50,39 +50,57 @@ def load_config() -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-async def fetch_node_models(node: Dict[str, str]) -> List[str]:
-    """Queries a node's /models endpoint, automatically failing over from primary to backup IP."""
+async def fetch_node_models(node: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Queries a node's /models endpoint, preserving full model objects (including max_model_len/context_window)
+    and passing custom node headers if configured."""
     primary_url = node["primary"]
     backup = node.get("backup")
+    node_headers = node.get("headers", {})
+    req_headers = {**node_headers}
     
-    # Try Primary (Ethernet)
+    # Try Primary
     try:
         url = f"{primary_url.rstrip('/')}/models"
         logger.debug(f"Querying models from primary node {node['name']} at {url}")
-        resp = await CLIENT.get(url, timeout=CONFIG["timeouts"]["primary"])
+        resp = await CLIENT.get(url, headers=req_headers, timeout=CONFIG["timeouts"]["primary"])
         if resp.status_code == 200:
             data = resp.json()
-            return [m["id"] for m in data.get("data", [])]
+            models_data = data.get("data", [])
+            # Return full model dictionaries or wrap string list items into dicts
+            result = []
+            for item in models_data:
+                if isinstance(item, dict):
+                    result.append(item)
+                elif isinstance(item, str):
+                    result.append({"id": item})
+            return result
     except (httpx.RequestError, httpx.TimeoutException) as e:
         logger.warning(f"Primary endpoint failed for {node['name']} ({str(e)}). Trying backup...")
         
-    # Try Backup (WiFi)
+    # Try Backup
     if backup:
         try:
             url = f"{backup.rstrip('/')}/models"
             logger.debug(f"Querying models from backup node {node['name']} at {url}")
-            resp = await CLIENT.get(url, timeout=CONFIG["timeouts"]["fallback"])
+            resp = await CLIENT.get(url, headers=req_headers, timeout=CONFIG["timeouts"]["fallback"])
             if resp.status_code == 200:
                 data = resp.json()
-                return [m["id"] for m in data.get("data", [])]
+                models_data = data.get("data", [])
+                result = []
+                for item in models_data:
+                    if isinstance(item, dict):
+                        result.append(item)
+                    elif isinstance(item, str):
+                        result.append({"id": item})
+                return result
         except (httpx.RequestError, httpx.TimeoutException) as e:
             logger.error(f"Backup endpoint also failed for {node['name']} ({str(e)})")
             
     return []
 
 
-# Cache of active models per node: {node_name: [model_id_1, model_id_2, ...]}
-NODE_MODELS_CACHE: Dict[str, List[str]] = {}
+# Cache of active models per node: {node_name: [model_obj_1, model_obj_2, ...]}
+NODE_MODELS_CACHE: Dict[str, List[Dict[str, Any]]] = {}
 NODE_TEMP_CACHE: Dict[str, float] = {}
 
 # Prefix KV-Cache tracking: {prefix_hash: (node_name, timestamp)}
@@ -468,6 +486,9 @@ async def forward_request(
     backup_base = node.get("backup", "").rstrip('/')
     
     headers_to_send = {k: v for k, v in headers.items() if k.lower() not in ("host", "content-length")}
+    node_headers = node.get("headers", {})
+    if isinstance(node_headers, dict):
+        headers_to_send.update(node_headers)
     start_time = time.time()
     
     increment_active_requests(node["name"])
@@ -537,20 +558,61 @@ async def forward_request(
             decrement_active_requests(node["name"])
 
 
+@app.get("/")
+@app.get("/v1")
+async def root_v1_info():
+    """Returns cluster router information and OpenAPI base endpoints."""
+    return {
+        "status": "online",
+        "service": "llm-cluster-router",
+        "version": "1.0.0",
+        "endpoints": {
+            "models": "/v1/models",
+            "chat_completions": "/v1/chat/completions",
+            "completions": "/v1/completions",
+            "health": "/health"
+        }
+    }
+
+
 @app.get("/v1/models")
 async def get_models():
-    """Returns the unified list of currently loaded models across all active nodes."""
+    """Returns the unified list of currently loaded models across all active nodes,
+    aggregating the maximum context_window / max_model_len supported across nodes."""
     merged_models = {}
     
     async with CACHE_LOCK:
         for node_name, models in NODE_MODELS_CACHE.items():
             for m in models:
-                merged_models[m] = {
-                    "id": m,
-                    "object": "model",
-                    "created": 1677610602,
-                    "owned_by": "llm-cluster"
-                }
+                model_id = m.get("id") if isinstance(m, dict) else str(m)
+                if not model_id:
+                    continue
+                    
+                model_obj = dict(m) if isinstance(m, dict) else {"id": model_id}
+                model_obj.setdefault("object", "model")
+                model_obj.setdefault("created", 1677610602)
+                model_obj.setdefault("owned_by", "llm-cluster")
+                
+                # Resolve context length from catalog if not reported by backend node
+                if "max_model_len" not in model_obj and "context_window" not in model_obj:
+                    caps = get_model_capabilities(model_id)
+                    ctx_len = caps.get("context_window", 131072)
+                    model_obj["max_model_len"] = ctx_len
+                    model_obj["context_window"] = ctx_len
+                elif "max_model_len" in model_obj and "context_window" not in model_obj:
+                    model_obj["context_window"] = model_obj["max_model_len"]
+                elif "context_window" in model_obj and "max_model_len" not in model_obj:
+                    model_obj["max_model_len"] = model_obj["context_window"]
+                    
+                if model_id not in merged_models:
+                    merged_models[model_id] = model_obj
+                else:
+                    # Take the MAXIMUM context window supported across all nodes serving this model
+                    existing_len = merged_models[model_id].get("max_model_len", 0)
+                    new_len = model_obj.get("max_model_len", 0)
+                    max_len = max(existing_len, new_len)
+                    merged_models[model_id]["max_model_len"] = max_len
+                    merged_models[model_id]["context_window"] = max_len
                 
     # Fallback: if cache is empty, query once in real-time
     if not merged_models:
@@ -559,12 +621,31 @@ async def get_models():
         results = await asyncio.gather(*tasks)
         for models in results:
             for m in models:
-                merged_models[m] = {
-                    "id": m,
-                    "object": "model",
-                    "created": 1677610602,
-                    "owned_by": "llm-cluster"
-                }
+                model_id = m.get("id") if isinstance(m, dict) else str(m)
+                if not model_id:
+                    continue
+                model_obj = dict(m) if isinstance(m, dict) else {"id": model_id}
+                model_obj.setdefault("object", "model")
+                model_obj.setdefault("created", 1677610602)
+                model_obj.setdefault("owned_by", "llm-cluster")
+                if "max_model_len" not in model_obj and "context_window" not in model_obj:
+                    caps = get_model_capabilities(model_id)
+                    ctx_len = caps.get("context_window", 131072)
+                    model_obj["max_model_len"] = ctx_len
+                    model_obj["context_window"] = ctx_len
+                elif "max_model_len" in model_obj and "context_window" not in model_obj:
+                    model_obj["context_window"] = model_obj["max_model_len"]
+                elif "context_window" in model_obj and "max_model_len" not in model_obj:
+                    model_obj["max_model_len"] = model_obj["context_window"]
+                    
+                if model_id not in merged_models:
+                    merged_models[model_id] = model_obj
+                else:
+                    existing_len = merged_models[model_id].get("max_model_len", 0)
+                    new_len = model_obj.get("max_model_len", 0)
+                    max_len = max(existing_len, new_len)
+                    merged_models[model_id]["max_model_len"] = max_len
+                    merged_models[model_id]["context_window"] = max_len
                 
     return {"object": "list", "data": list(merged_models.values())}
 
@@ -916,7 +997,8 @@ async def handle_llm_request(request: Request):
     async with CACHE_LOCK:
         for node in CONFIG["nodes"]:
             active_models = NODE_MODELS_CACHE.get(node["name"], [])
-            if requested_model in active_models:
+            active_ids = [m.get("id") if isinstance(m, dict) else str(m) for m in active_models]
+            if requested_model in active_ids:
                 eligible_nodes.append(node)
                 
     if not eligible_nodes:
@@ -924,7 +1006,8 @@ async def handle_llm_request(request: Request):
         logger.info(f"Model '{requested_model}' not found in cache. Querying nodes in real-time...")
         for node in CONFIG["nodes"]:
             models = await fetch_node_models(node)
-            if requested_model in models:
+            active_ids = [m.get("id") if isinstance(m, dict) else str(m) for m in models]
+            if requested_model in active_ids:
                 eligible_nodes.append(node)
                 async with CACHE_LOCK:
                     NODE_MODELS_CACHE[node["name"]] = models
@@ -935,8 +1018,9 @@ async def handle_llm_request(request: Request):
         async with CACHE_LOCK:
             for models in NODE_MODELS_CACHE.values():
                 for m in models:
-                    if m not in all_active_models:
-                        all_active_models.append(m)
+                    m_id = m.get("id") if isinstance(m, dict) else str(m)
+                    if m_id and m_id not in all_active_models:
+                        all_active_models.append(m_id)
                         
         if all_active_models:
             fallback_model = all_active_models[0]
@@ -952,7 +1036,8 @@ async def handle_llm_request(request: Request):
             async with CACHE_LOCK:
                 for node in CONFIG["nodes"]:
                     active_models = NODE_MODELS_CACHE.get(node["name"], [])
-                    if requested_model in active_models:
+                    active_ids = [m.get("id") if isinstance(m, dict) else str(m) for m in active_models]
+                    if requested_model in active_ids:
                         eligible_nodes.append(node)
                         
     if not eligible_nodes:
@@ -992,28 +1077,54 @@ async def handle_llm_request(request: Request):
             selected_node = sorted_nodes[hash_val % len(sorted_nodes)]
             logger.info(f"Smart routing selected sticky node {selected_node['name']} for key '{sticky_key}'")
         else:
-            # Thermal-aware least-loaded routing
+
+
+            # Context Window & Thermal-aware routing
+            # Estimate requested token length (approx 3.2 chars per token for safe estimation + max_tokens requested)
+            est_prompt_tokens = int(len(prompt) / 3.2) if prompt else 0
+            max_gen_tokens = json_data.get("max_tokens", 2048) if isinstance(json_data, dict) else 2048
+            est_total_request_len = est_prompt_tokens + max_gen_tokens
+
+            candidate_nodes = list(eligible_nodes)
+            
+            # Filter nodes by context window capacity if max_model_len reported
+            context_capable_nodes = []
+            for n in candidate_nodes:
+                node_models = NODE_MODELS_CACHE.get(n["name"], [])
+                node_ctx = 0
+                for m in node_models:
+                    m_id = m.get("id") if isinstance(m, dict) else str(m)
+                    if m_id == requested_model:
+                        node_ctx = m.get("max_model_len", m.get("context_window", 0)) if isinstance(m, dict) else 0
+                        break
+                # If node reports max_model_len and it's smaller than estimated request, skip node
+                if node_ctx > 0 and est_total_request_len > node_ctx:
+                    logger.info(f"Skipping node '{n['name']}' for '{requested_model}': est request len ({est_total_request_len}) exceeds node context limit ({node_ctx})")
+                    continue
+                context_capable_nodes.append(n)
+                
+            if context_capable_nodes:
+                candidate_nodes = context_capable_nodes
+            else:
+                logger.warning(f"No active node for '{requested_model}' supports est context length ({est_total_request_len}). Routing to all eligible nodes.")
+
             thermal_cfg = CONFIG.get("thermal_routing", {})
             thermal_enabled = thermal_cfg.get("enabled", True)
             max_temp = thermal_cfg.get("max_temp_celsius", 82.0)
 
-            candidate_nodes = list(eligible_nodes)
             if thermal_enabled:
-                # Filter out nodes exceeding max thermal ceiling if cool candidates are available
                 cool_nodes = [n for n in candidate_nodes if NODE_TEMP_CACHE.get(n["name"], 0) < max_temp]
                 if cool_nodes:
                     candidate_nodes = cool_nodes
                 else:
                     logger.warning(f"All candidate nodes for '{requested_model}' exceed thermal limit ({max_temp}°C). Routing to coolest available.")
 
-            shuffled_nodes = list(candidate_nodes)
-            random.shuffle(shuffled_nodes)
-
-            # Sort by active requests, then tie-break by lower temperature if telemetry is present
+            # Sort by active requests, then node priority (lower = higher priority), then lower temperature
             selected_node = min(
-                shuffled_nodes,
+                candidate_nodes,
                 key=lambda n: (
                     ACTIVE_REQUESTS.get(n["name"], 0),
+                    n.get("priority", 1),
                     NODE_TEMP_CACHE.get(n["name"], 0)
                 )
             )
