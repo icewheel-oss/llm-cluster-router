@@ -123,11 +123,18 @@ model_capabilities:
 # List of LLM Cluster Nodes.
 # For each node, the proxy always attempts connections via the 'primary' address.
 # If the primary connection fails or times out, it automatically fails over to the 'backup' address.
+# Optional 'priority' integer (default 1) sets node preference order (lower = higher priority).
 nodes:
   - name: "node-1"
     primary: "http://10.0.0.11:8000/v1"
     backup: "http://10.0.0.21:8000/v1"
+    priority: 1
 
   - name: "node-2"
     primary: "http://10.0.0.12:8000/v1"
     backup: "http://10.0.0.22:8000/v1"
+    priority: 1
+
+  - name: "node-mac-fallback"
+    primary: "http://10.0.0.30:8000/v1"
+    priority: 99  # Lowest priority fallback (demoted)
