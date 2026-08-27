@@ -32,6 +32,7 @@ LOGSTASH_PORT = int(os.getenv("LOGSTASH_PORT", "5044"))
 NODE_MODELS_CACHE: Dict[str, List[str]] = {}
 ACTIVE_REQUESTS: Dict[str, int] = {}
 CACHE_LOCK = asyncio.Lock()
+LAST_CONFIG_MTIME: float = 0.0
 
 
 def increment_active_requests(node_name: str):
@@ -43,11 +44,42 @@ def decrement_active_requests(node_name: str):
 
 
 def load_config() -> Dict[str, Any]:
+    global LAST_CONFIG_MTIME
     config_path = os.getenv("CONFIG_PATH", "config.yaml")
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Configuration file not found at: {config_path}")
+    LAST_CONFIG_MTIME = os.path.getmtime(config_path)
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
+
+
+def reload_config_if_changed() -> bool:
+    """Reloads CONFIG dynamically if config.yaml modification time changed."""
+    global CONFIG, LAST_CONFIG_MTIME, ACTIVE_REQUESTS
+    config_path = os.getenv("CONFIG_PATH", "config.yaml")
+    if not os.path.exists(config_path):
+        return False
+    current_mtime = os.path.getmtime(config_path)
+    if current_mtime != LAST_CONFIG_MTIME:
+        try:
+            new_config = load_config()
+            # Normalize settings
+            new_config.setdefault("timeouts", {})
+            new_config["timeouts"].setdefault("primary", 1.0)
+            new_config["timeouts"].setdefault("fallback", 3.0)
+            new_config["timeouts"].setdefault("request", 120.0)
+            new_config.setdefault("general_settings", {})
+            
+            CONFIG = new_config
+            for node in CONFIG.get("nodes", []):
+                if node["name"] not in ACTIVE_REQUESTS:
+                    ACTIVE_REQUESTS[node["name"]] = 0
+            logger.info("⚡ Configuration hot-reloaded dynamically from config.yaml!")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to hot-reload configuration: {e}")
+    return False
+
 
 
 async def fetch_node_models(node: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -210,6 +242,9 @@ async def update_models_cache_loop():
     """Background task to periodically refresh the active models list and thermal metrics from all nodes."""
     while True:
         try:
+            # Check if config.yaml was updated on disk
+            reload_config_if_changed()
+
             tasks = [fetch_node_models(node) for node in CONFIG["nodes"]]
             temp_tasks = [fetch_node_temperature(node) for node in CONFIG["nodes"]]
             
@@ -267,6 +302,17 @@ app = FastAPI(
     description="A high-performance reverse proxy for routing LLM requests across a local GPU cluster.",
     lifespan=lifespan
 )
+
+
+@app.post("/_router/reload")
+async def manual_reload_config():
+    """Management endpoint to trigger instant hot-reload of config.yaml without container restarts."""
+    reloaded = reload_config_if_changed()
+    return {
+        "status": "reloaded" if reloaded else "unchanged",
+        "nodes_count": len(CONFIG.get("nodes", [])),
+        "nodes": [n["name"] for n in CONFIG.get("nodes", [])]
+    }
 
 
 @app.exception_handler(StarletteHTTPException)
