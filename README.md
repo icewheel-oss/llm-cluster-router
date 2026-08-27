@@ -29,6 +29,7 @@ It aggregates models from multiple nodes in real-time, dynamically routes chat c
 ## ✨ Features
 
 - **Dynamic Model Aggregation (`GET /v1/models`)**: Periodically queries all online nodes in parallel, aggregates currently loaded models, deduplicates the list, and serves it transparently.
+- **Zero-Downtime Dynamic Configuration Hot-Reload**: Automatically monitors `config.yaml` file modification times (`mtime`) on disk and reloads updated node configurations, IP changes, or priorities dynamically without container restarts. Also supports instant manual reloads via `POST /_router/reload`.
 - **Context-Aware Routing**: Reads the requested model from incoming API payloads and routes the request to whichever node currently has that model loaded in memory.
 - **Ethernet-to-WiFi Failover**: Configured with primary Ethernet IPs and backup WiFi IPs. It automatically tries the high-speed Ethernet route first and seamlessly fails over to WiFi if the connection fails or times out.
 - **KV Prefix Cache-Aware Routing**: Hashes system/prompt prefixes (`CRC32`). Automatically routes matching prompts to the node holding the warm KV-cache, reducing Time-To-First-Token (TTFT) by up to 5x.
@@ -149,6 +150,10 @@ The router functions as a drop-in replacement for standard OpenAI client configu
 - `POST /v1/chat/completions` - Routes and generates chat tokens (supports streaming).
 - `POST /v1/completions` - Routes standard completions.
 - `POST /v1/embeddings` - Routes embedding requests.
+
+### ⚙️ Management & Health Endpoints
+- `GET /health` - Health check endpoint returning status.
+- `POST /_router/reload` - Instantly triggers a configuration reload from `config.yaml` without downtime.
 
 ---
 
