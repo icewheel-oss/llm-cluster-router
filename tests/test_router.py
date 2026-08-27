@@ -1,6 +1,9 @@
 # Copyright (c) 2026 Rohit Khatkar
 # Licensed under the MIT License (see LICENSE for details)
 
+import os
+import time
+import yaml
 import asyncio
 import pytest
 import httpx
@@ -407,6 +410,7 @@ async def test_handle_llm_request_smart_routing(mocker):
         "node-1": 3,
         "node-2": 0
     }
+    main.PREFIX_CACHE.clear()
 
     mock_resp = StreamingResponse(
         AsyncIterator([b'{}']),
@@ -782,6 +786,57 @@ async def test_context_window_routing_filter(mocker):
     assert resp.status_code == 200
     args, kwargs = main.forward_request.call_args
     assert kwargs["node"]["name"] == "node-2"
+
+
+async def test_reload_config_if_changed(tmp_path, monkeypatch):
+    """Test reload_config_if_changed reloads configuration when config file modification time updates."""
+    config_file = tmp_path / "config.yaml"
+    initial_content = {
+        "nodes": [
+            {"name": "test-node-1", "primary": "http://10.0.0.1:8001/v1"}
+        ]
+    }
+    config_file.write_text(yaml.dump(initial_content))
+    monkeypatch.setenv("CONFIG_PATH", str(config_file))
+    
+    # Load initial config
+    main.CONFIG = main.load_config()
+    assert len(main.CONFIG["nodes"]) == 1
+    
+    # Should report False when file has not been modified
+    assert main.reload_config_if_changed() is False
+    
+    # Modify config file
+    updated_content = {
+        "nodes": [
+            {"name": "test-node-1", "primary": "http://10.0.0.1:8001/v1"},
+            {"name": "test-node-2", "primary": "http://10.0.0.2:8000/v1"}
+        ]
+    }
+    # Touch mtime into future to ensure difference
+    os.utime(str(config_file), (time.time() + 5, time.time() + 5))
+    config_file.write_text(yaml.dump(updated_content))
+    
+    # Should detect modification and reload
+    assert main.reload_config_if_changed() is True
+    assert len(main.CONFIG["nodes"]) == 2
+    assert "test-node-2" in main.ACTIVE_REQUESTS
+
+
+async def test_manual_reload_endpoint(tmp_path, monkeypatch):
+    """Test manual_reload_config management endpoint."""
+    config_file = tmp_path / "config.yaml"
+    initial_content = {"nodes": [{"name": "test-node-1", "primary": "http://10.0.0.1:8001/v1"}]}
+    config_file.write_text(yaml.dump(initial_content))
+    monkeypatch.setenv("CONFIG_PATH", str(config_file))
+    
+    main.CONFIG = main.load_config()
+    
+    res = await main.manual_reload_config()
+    assert res["status"] == "unchanged"
+    assert res["nodes_count"] == 1
+    assert res["nodes"] == ["test-node-1"]
+
 
 
 
