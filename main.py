@@ -67,7 +67,7 @@ def reload_config_if_changed() -> bool:
             new_config.setdefault("timeouts", {})
             new_config["timeouts"].setdefault("primary", 1.0)
             new_config["timeouts"].setdefault("fallback", 3.0)
-            new_config["timeouts"].setdefault("request", 120.0)
+            new_config["timeouts"].setdefault("request", None)
             new_config.setdefault("general_settings", {})
             
             CONFIG = new_config
@@ -281,12 +281,12 @@ async def lifespan(app: FastAPI):
     CONFIG.setdefault("timeouts", {})
     CONFIG["timeouts"].setdefault("primary", 1.0)
     CONFIG["timeouts"].setdefault("fallback", 3.0)
-    CONFIG["timeouts"].setdefault("request", 120.0)
+    CONFIG["timeouts"].setdefault("request", None)
     CONFIG.setdefault("general_settings", {})
     
     # Initialize global async HTTP client
     limits = httpx.Limits(max_keepalive_connections=50, max_connections=100)
-    CLIENT = httpx.AsyncClient(limits=limits)
+    CLIENT = httpx.AsyncClient(limits=limits, timeout=httpx.Timeout(None, connect=30.0))
     
     # Start background cache sync
     asyncio.create_task(update_models_cache_loop())

@@ -30,6 +30,7 @@ It aggregates models from multiple nodes in real-time, dynamically routes chat c
 
 - **Dynamic Model Aggregation (`GET /v1/models`)**: Periodically queries all online nodes in parallel, aggregates currently loaded models, deduplicates the list, and serves it transparently.
 - **Zero-Downtime Dynamic Configuration Hot-Reload**: Automatically monitors `config.yaml` file modification times (`mtime`) on disk and reloads updated node configurations, IP changes, or priorities dynamically without container restarts. Also supports instant manual reloads via `POST /_router/reload`.
+- **Uncapped Request Timeout Support (`request: null`)**: Supports completely disabling request timeouts (`timeout=None`) across the Python AsyncClient and gateway pipeline, allowing large local LLM models (e.g. Qwen 27B FP8, DeepSeek-R1) to process ultra-long context prompts or multi-minute reasoning chains without artificial 120s timeout walls.
 - **Context-Aware Routing**: Reads the requested model from incoming API payloads and routes the request to whichever node currently has that model loaded in memory.
 - **Ethernet-to-WiFi Failover**: Configured with primary Ethernet IPs and backup WiFi IPs. It automatically tries the high-speed Ethernet route first and seamlessly fails over to WiFi if the connection fails or times out.
 - **KV Prefix Cache-Aware Routing**: Hashes system/prompt prefixes (`CRC32`). Automatically routes matching prompts to the node holding the warm KV-cache, reducing Time-To-First-Token (TTFT) by up to 5x.
@@ -68,7 +69,7 @@ server:
 timeouts:
   primary: 1.0  # Timeout for Ethernet links (fail over fast)
   fallback: 3.0 # Timeout for WiFi links
-  request: 120.0
+  request: null  # Set to null to disable request timeouts for long local LLM reasoning
 
 # Capabilities routing configuration
 capabilities_routing:
