@@ -11,7 +11,7 @@ server:
 timeouts:
   primary: 1.0  # Timeout for primary Ethernet links (fail over fast)
   fallback: 3.0 # Timeout for backup WiFi links
-  request: 120.0 # Timeout for actual generation calls
+  request: null # Timeout for actual generation calls
 
 # General settings
 general_settings:
