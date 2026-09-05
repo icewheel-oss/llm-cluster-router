@@ -149,6 +149,53 @@ RATE_LIMIT_CACHE: Dict[str, List[float]] = {}
 CACHE_LOCK = asyncio.Lock()
 
 
+def normalize_model_str(name: str) -> str:
+    """Normalizes model string by removing organization prefix, slashes, hyphens, underscores, and dots."""
+    if not name:
+        return ""
+    s = str(name).strip().lower()
+    if "/" in s:
+        s = s.split("/")[-1]
+    return re.sub(r'[^a-z0-9]', '', s)
+
+
+def is_model_matching(requested: str, served: str) -> bool:
+    """Returns True if requested model matches served model via exact, case-insensitive, alias, or fuzzy normalized matching."""
+    if not requested or not served:
+        return False
+    if requested == served:
+        return True
+    if requested.lower() == served.lower():
+        return True
+    aliases = CONFIG.get("model_aliases", {})
+    target_alias = aliases.get(requested) or aliases.get(requested.lower())
+    if target_alias and (target_alias == served or target_alias.lower() == served.lower()):
+        return True
+    norm_req = normalize_model_str(requested)
+    norm_srv = normalize_model_str(served)
+    if norm_req == norm_srv:
+        return True
+    for alias_k, alias_v in aliases.items():
+        if normalize_model_str(alias_k) == norm_req and normalize_model_str(alias_v) == norm_srv:
+            return True
+    return False
+
+
+def get_canonical_model_name(requested_model: str, active_models: List[str]) -> str:
+    """Resolves requested model string to the canonical model name served by active cluster nodes."""
+    if not requested_model:
+        return requested_model
+    for active in active_models:
+        if is_model_matching(requested_model, active):
+            return active
+    aliases = CONFIG.get("model_aliases", {})
+    if requested_model in aliases:
+        return aliases[requested_model]
+    if requested_model.lower() in aliases:
+        return aliases[requested_model.lower()]
+    return requested_model
+
+
 def get_prefix_hash(json_data: dict) -> str:
     """Extracts system prompt or initial prompt prefix and returns a CRC32 hash string.
     Returns empty string if prefix length is below min_prefix_length.
@@ -228,7 +275,11 @@ async def fetch_node_temperature(node: Dict[str, str]) -> float:
         if resp.status_code == 200:
             temps = []
             for line in resp.text.splitlines():
-                if line.startswith("node_hwmon_temp_celsius{") or line.startswith("node_thermal_zone_temp{"):
+                if line.startswith("node_hwmon_temp_celsius{") or line.startswith("node_thermal_zone_temp{") or line.startswith("DCGM_FI_DEV_GPU_TEMP") or line.startswith("nvidia_smi_temperature_celsius"):
+                    # Ignore storage NVMe, Wi-Fi, and NIC PHY sensors so routing isolates GPU/SoC core heat
+                    line_lower = line.lower()
+                    if "nvme" in line_lower or "wifi" in line_lower or "phy" in line_lower:
+                        continue
                     try:
                         val = float(line.split()[-1])
                         # Filter out invalid sensor sentinel values (e.g. >150 or <=0)
@@ -1043,14 +1094,20 @@ async def handle_llm_request(request: Request):
     if modified:
         body_to_send = json.dumps(json_data).encode("utf-8")
     
-    # Find nodes containing this model
+    # Find nodes containing this model (using strict + fuzzy/alias model matching)
     eligible_nodes = []
     async with CACHE_LOCK:
         for node in CONFIG["nodes"]:
             active_models = NODE_MODELS_CACHE.get(node["name"], [])
             active_ids = [m.get("id") if isinstance(m, dict) else str(m) for m in active_models]
-            if requested_model in active_ids:
-                eligible_nodes.append(node)
+            for a_id in active_ids:
+                if is_model_matching(requested_model, a_id):
+                    eligible_nodes.append(node)
+                    # Normalize requested_model parameter in backend body to matched active_id
+                    if requested_model != a_id and isinstance(json_data, dict):
+                        json_data["model"] = a_id
+                        body_to_send = json.dumps(json_data).encode("utf-8")
+                    break
                 
     if not eligible_nodes:
         # Fallback check: if not in cache, query in real time in case model was just loaded
