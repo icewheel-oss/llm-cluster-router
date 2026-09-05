@@ -34,7 +34,9 @@ It aggregates models from multiple nodes in real-time, dynamically routes chat c
 - **Context-Aware Routing**: Reads the requested model from incoming API payloads and routes the request to whichever node currently has that model loaded in memory.
 - **Ethernet-to-WiFi Failover**: Configured with primary Ethernet IPs and backup WiFi IPs. It automatically tries the high-speed Ethernet route first and seamlessly fails over to WiFi if the connection fails or times out.
 - **KV Prefix Cache-Aware Routing**: Hashes system/prompt prefixes (`CRC32`). Automatically routes matching prompts to the node holding the warm KV-cache, reducing Time-To-First-Token (TTFT) by up to 5x.
-- **Thermal-Aware Load Balancing**: Periodically polls hardware temperatures (via `node-exporter` on port `9100`). Automatically deprioritizes nodes exceeding thermal ceilings (`max_temp_celsius`: `82.0°C`) to prevent GPU thermal throttling.
+- **Thermal-Priority & Multi-Threshold Routing**: Thermal health evaluation takes precedence over all other strategies (including KV-cache affinity). Uses dual-tier temperature thresholds:
+  - **Warning Threshold (`70.0°C`)**: Nodes exceeding 70°C bypass KV-cache match affinity and get deprioritized to give warm GPUs a chance to cool down.
+  - **Critical Threshold (`80.0°C`)**: Hard block that stops routing new requests to nodes $\ge 80^\circ	ext{C}$ until hardware temperatures drop back down.
 - **Tool-Call & Payload Sanitization**: Intercepts historical `tool_calls` arguments in multi-turn conversation payloads to ensure compliance with strict OpenAI specs and prevent Jinja templating crashes on underlying engines like vLLM.
 - **Capabilities-Based Routing**: Automatically checks request requirements (e.g., vision payloads, tool definitions, structured JSON output formats) against the model capabilities catalog. Mismatched requests (such as sending an image to a text-only DeepSeek model or tool-calls to a reasoning-only DeepSeek-R1 model) are transparently rewritten and routed to a suitable active model.
 - **Optional Client Rate Limiting**: Per-client (Auth user / IP) rate-limiting quotas to protect cluster GPUs from single-agent loops.
@@ -46,7 +48,7 @@ It aggregates models from multiple nodes in real-time, dynamically routes chat c
 
 ## 🔮 Feature Roadmap & Ideas
 
-- [x] **Thermal-Aware Routing**: Deprioritize overheating nodes before thermal throttling strikes.
+- [x] **Thermal-Priority Routing Over KV Cache**: Dual-tier thermal thresholds (70°C cooling bypass / 80°C hard block) that override KV-cache affinity to prevent GPU overheating.
 - [x] **Tool-Call Payload Sanitization**: Self-healing payload sanitization for complex agent frameworks.
 - [x] **KV-Cache Aware Routing (Prefix Cache Stickiness)**: Route prompts with matching system prompts/prefixes to the node holding the KV-cache warm in memory.
 - [x] **Rate Limiting & Token Quotas**: Per-user / per-key request rate limits and token usage budgeting.

@@ -67,8 +67,13 @@ def reload_config_if_changed() -> bool:
             new_config.setdefault("timeouts", {})
             new_config["timeouts"].setdefault("primary", 1.0)
             new_config["timeouts"].setdefault("fallback", 3.0)
-            new_config["timeouts"].setdefault("request", None)
+            new_config["timeouts"].setdefault("request", 120.0)
             new_config.setdefault("general_settings", {})
+            new_config.setdefault("thermal_routing", {})
+            new_config["thermal_routing"].setdefault("enabled", True)
+            new_config["thermal_routing"].setdefault("warning_temp_celsius", 70.0)
+            new_config["thermal_routing"].setdefault("critical_temp_celsius", 80.0)
+            new_config["thermal_routing"].setdefault("thermal_priority_over_kv_cache", True)
             
             CONFIG = new_config
             for node in CONFIG.get("nodes", []):
@@ -281,7 +286,7 @@ async def lifespan(app: FastAPI):
     CONFIG.setdefault("timeouts", {})
     CONFIG["timeouts"].setdefault("primary", 1.0)
     CONFIG["timeouts"].setdefault("fallback", 3.0)
-    CONFIG["timeouts"].setdefault("request", None)
+    CONFIG["timeouts"].setdefault("request", 120.0)
     CONFIG.setdefault("general_settings", {})
     
     # Initialize global async HTTP client
@@ -544,7 +549,7 @@ async def forward_request(
         try:
             url = f"{primary_base}/{path}"
             logger.info(f"Forwarding {method} request to primary node {node['name']} at {url}")
-            req = CLIENT.build_request(method, url, headers=headers_to_send, content=content, timeout=CONFIG["timeouts"]["request"])
+            req = CLIENT.build_request(method, url, headers=headers_to_send, content=content, timeout=None)
             resp = await CLIENT.send(req, stream=True)
             success = True
             return StreamingResponse(
@@ -573,7 +578,7 @@ async def forward_request(
             try:
                 url = f"{backup_base}/{path}"
                 logger.info(f"Forwarding {method} request to backup node {node['name']} at {url}")
-                req = CLIENT.build_request(method, url, headers=headers_to_send, content=content, timeout=CONFIG["timeouts"]["request"])
+                req = CLIENT.build_request(method, url, headers=headers_to_send, content=content, timeout=None)
                 resp = await CLIENT.send(req, stream=True)
                 success = True
                 return StreamingResponse(
@@ -1097,12 +1102,31 @@ async def handle_llm_request(request: Request):
     routing_mode = routing_config.get("mode", "smart").lower()
     sticky_header = routing_config.get("sticky_header", "x-session-id").lower()
 
-    # Prefix Cache Routing check: if this prefix hash was previously served by an active eligible node, prefer that node!
+    # Thermal Routing Configuration
+    thermal_cfg = CONFIG.get("thermal_routing", {})
+    thermal_enabled = thermal_cfg.get("enabled", True)
+    warning_temp = float(thermal_cfg.get("warning_temp_celsius", 70.0))
+    critical_temp = float(thermal_cfg.get("critical_temp_celsius", 80.0))
+    thermal_over_kv = thermal_cfg.get("thermal_priority_over_kv_cache", True)
+
+    # STAGE 1: Critical Thermal Hard Block (Excludes nodes >= critical_temp, e.g. 80°C)
+    if thermal_enabled:
+        cool_and_warm_nodes = [n for n in eligible_nodes if NODE_TEMP_CACHE.get(n["name"], 0) < critical_temp]
+        if cool_and_warm_nodes:
+            eligible_nodes = cool_and_warm_nodes
+        else:
+            logger.warning(f"All eligible nodes for '{requested_model}' exceed critical thermal limit ({critical_temp}°C). Routing to coolest available.")
+
+    # STAGE 2: Prefix Cache Routing Check (With Thermal Warning Check)
     prefix_matched_node = None
     if cached_prefix_node:
         for n in eligible_nodes:
             if n["name"] == cached_prefix_node:
-                prefix_matched_node = n
+                node_temp = NODE_TEMP_CACHE.get(n["name"], 0)
+                if thermal_enabled and thermal_over_kv and node_temp >= warning_temp:
+                    logger.info(f"Bypassing KV-cache hit for node '{n['name']}' because temp ({node_temp:.1f}°C) exceeds warning threshold ({warning_temp}°C) to allow cooling.")
+                else:
+                    prefix_matched_node = n
                 break
 
     if prefix_matched_node:
@@ -1154,16 +1178,12 @@ async def handle_llm_request(request: Request):
             else:
                 logger.warning(f"No active node for '{requested_model}' supports est context length ({est_total_request_len}). Routing to all eligible nodes.")
 
-            thermal_cfg = CONFIG.get("thermal_routing", {})
-            thermal_enabled = thermal_cfg.get("enabled", True)
-            max_temp = thermal_cfg.get("max_temp_celsius", 82.0)
-
             if thermal_enabled:
-                cool_nodes = [n for n in candidate_nodes if NODE_TEMP_CACHE.get(n["name"], 0) < max_temp]
+                cool_nodes = [n for n in candidate_nodes if NODE_TEMP_CACHE.get(n["name"], 0) < warning_temp]
                 if cool_nodes:
                     candidate_nodes = cool_nodes
                 else:
-                    logger.warning(f"All candidate nodes for '{requested_model}' exceed thermal limit ({max_temp}°C). Routing to coolest available.")
+                    logger.warning(f"All candidate nodes for '{requested_model}' exceed warning temp ({warning_temp}°C). Routing to coolest available.")
 
             # Sort by active requests, then node priority (lower = higher priority), then lower temperature
             selected_node = min(

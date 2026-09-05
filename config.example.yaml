@@ -1,140 +1,97 @@
-# =============================================================================
-# LLM Cluster Router Configuration Example
-# =============================================================================
-
-# Server settings for the proxy itself
-server:
-  host: "0.0.0.0"
-  port: 8000
-
-# Connection timeouts in seconds
-timeouts:
-  primary: 1.0  # Timeout for primary Ethernet links (fail over fast)
-  fallback: 3.0 # Timeout for backup WiFi links
-  request: null # Timeout for actual generation calls
-
-# General settings
-general_settings:
-  health_check_interval: 30 # Check node models cache every 30 seconds to reduce health check log spam
-
-# Routing settings
-routing:
-  mode: "smart"       # Options: 'random', 'sticky', 'smart'
-  sticky_header: "x-session-id" # Header used to establish session stickiness
-
-# Thermal routing & monitoring options (optional)
-thermal_routing:
-  enabled: true
-  max_temp_celsius: 82.0   # Thermal ceiling: nodes exceeding this temp are deprioritized
-  exporter_port: 9100     # Default prometheus-node-exporter port
-
-# KV Prefix Cache-Aware Routing (optional)
-prefix_cache_routing:
-  enabled: true
-  min_prefix_length: 50   # Minimum characters in system prompt/prefix to activate cache routing
-  ttl_seconds: 600        # Cache entry TTL (10 minutes)
-
-# Rate Limiting & Token Quotas (optional)
-rate_limiting:
-  enabled: false          # Disabled by default, enable to enforce client quotas
-  requests_per_minute: 60 # Max requests per minute per IP / Auth User
-
-
-
-# Capabilities-based routing settings
 capabilities_routing:
   enabled: true
-
-# Catalog of model capabilities to assist in dynamic routing fallback.
-# If a request requires a capability (e.g. vision, tool_calling, structured_output)
-# that the client-requested model does not support, the gateway automatically
-# reroutes to an active node serving a model that does.
+general_settings:
+  health_check_interval: 30
 model_capabilities:
-  - name_pattern: "thinking"
-    vision: false
-    tool_calling: false
-    structured_output: false
-    context_window: 131072
-
-  - name_pattern: "r1"
-    vision: false
-    tool_calling: false
-    structured_output: false
-    context_window: 131072
-
-  - name_pattern: "vl"
-    vision: true
-    tool_calling: true
-    structured_output: true
-    context_window: 262144
-
-  - name_pattern: "step"
-    vision: true
-    tool_calling: true
-    structured_output: true
-
-  - name_pattern: "qwen"
-    vision: false
-    tool_calling: true
-    structured_output: true
-    context_window: 262144
-
-  - name_pattern: "deepseek"
-    vision: false
-    tool_calling: true
-    structured_output: true
-    context_window: 131072
-
-  - name_pattern: "minimax"
-    vision: false
-    tool_calling: true
-    structured_output: true
-
-  - name_pattern: "glm"
-    vision: false
-    tool_calling: true
-    structured_output: true
-
-  - name_pattern: "nemotron"
-    vision: false
-    tool_calling: true
-    structured_output: true
-
-  - name_pattern: "gemma"
-    vision: false
-    tool_calling: true
-    structured_output: true
-
-  - name_pattern: "inkling"
-    vision: false
-    tool_calling: true
-    structured_output: true
-
-  - name_pattern: "gpt-oss"
-    vision: false
-    tool_calling: true
-    structured_output: true
-
-  - name_pattern: "llama"
-    vision: false
-    tool_calling: true
-    structured_output: true
-
-# List of LLM Cluster Nodes.
-# For each node, the proxy always attempts connections via the 'primary' address.
-# If the primary connection fails or times out, it automatically fails over to the 'backup' address.
-# Optional 'priority' integer (default 1) sets node preference order (lower = higher priority).
+- context_window: 131072
+  name_pattern: thinking
+  structured_output: false
+  tool_calling: false
+  vision: false
+- context_window: 131072
+  name_pattern: r1
+  structured_output: false
+  tool_calling: false
+  vision: false
+- context_window: 262144
+  name_pattern: vl
+  structured_output: true
+  tool_calling: true
+  vision: true
+- name_pattern: step
+  structured_output: true
+  tool_calling: true
+  vision: true
+- context_window: 262144
+  name_pattern: qwen
+  structured_output: true
+  tool_calling: true
+  vision: false
+- context_window: 131072
+  name_pattern: deepseek
+  structured_output: true
+  tool_calling: true
+  vision: false
+- name_pattern: minimax
+  structured_output: true
+  tool_calling: true
+  vision: false
+- name_pattern: glm
+  structured_output: true
+  tool_calling: true
+  vision: false
+- name_pattern: nemotron
+  structured_output: true
+  tool_calling: true
+  vision: false
+- name_pattern: gemma
+  structured_output: true
+  tool_calling: true
+  vision: false
+- name_pattern: inkling
+  structured_output: true
+  tool_calling: true
+  vision: false
+- name_pattern: gpt-oss
+  structured_output: true
+  tool_calling: true
+  vision: false
+- name_pattern: llama
+  structured_output: true
+  tool_calling: true
+  vision: false
 nodes:
-  - name: "node-1"
-    primary: "http://10.0.0.11:8000/v1"
-    backup: "http://10.0.0.21:8000/v1"
-    priority: 1
-
-  - name: "node-2"
-    primary: "http://10.0.0.12:8000/v1"
-    backup: "http://10.0.0.22:8000/v1"
-    priority: 1
-
-  - name: "node-mac-fallback"
-    primary: "http://10.0.0.30:8000/v1"
-    priority: 99  # Lowest priority fallback (demoted)
+- backup: http://10.0.0.21:8000/v1
+  name: node-1
+  primary: http://10.0.0.11:8000/v1
+  priority: 1
+- backup: http://10.0.0.22:8000/v1
+  name: node-2
+  primary: http://10.0.0.12:8000/v1
+  priority: 1
+- name: node-mac-fallback
+  primary: http://10.0.0.30:8000/v1
+  priority: 99
+prefix_cache_routing:
+  enabled: true
+  min_prefix_length: 50
+  ttl_seconds: 600
+rate_limiting:
+  enabled: false
+  requests_per_minute: 60
+routing:
+  mode: smart
+  sticky_header: x-session-id
+server:
+  host: 0.0.0.0
+  port: 8000
+thermal_routing:
+  critical_temp_celsius: 80.0
+  enabled: true
+  exporter_port: 9100
+  thermal_priority_over_kv_cache: true
+  warning_temp_celsius: 70.0
+timeouts:
+  fallback: 3.0
+  primary: 1.0
+  request: null
