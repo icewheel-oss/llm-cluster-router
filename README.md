@@ -111,11 +111,11 @@ model_capabilities:
 
 nodes:
   - name: "node-1"
-    primary: "http://192.168.86.221:8000/v1"
-    backup: "http://192.168.86.211:8000/v1"
+    primary: "http://192.168.1.101:8000/v1"
+    backup: "http://192.168.2.101:8000/v1"
   - name: "node-4"
-    primary: "http://192.168.86.224:8000/v1"
-    backup: "http://192.168.86.214:8000/v1"
+    primary: "http://192.168.1.101:8000/v1"
+    backup: "http://192.168.2.101:8000/v1"
 ```
 
 ### 2. Standalone Deployment (Docker Compose)

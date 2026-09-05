@@ -14,10 +14,10 @@ import ssl
 DOMAINS = [
     "https://llm.rkdfv.com",
     "https://qwen.rkdfv.com",
-    "https://llm.icewheel.net",
-    "https://qwen.icewheel.net",
-    "https://llm.khatkar.net",
-    "https://qwen.khatkar.net"
+    "https://llm.example.com",
+    "https://qwen.example.com",
+    "https://llm.example.com",
+    "https://qwen.example.com"
 ]
 
 # Disable SSL verification for local testing if self-signed certs are used
