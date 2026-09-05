@@ -143,6 +143,58 @@ docker compose up -d --build
 
 ---
 
+## 💡 Best Practices: Prompt Design for Batch / High-Concurrency Workloads
+
+If you run a pool of worker processes that all send the **same fixed system
+prompt** against a batch/queue of work (e.g. a document-processing pipeline,
+a bulk extraction job, anything that fans out N concurrent workers against
+one large backlog), be aware of an interaction between two features above:
+
+**KV Prefix Cache-Aware Routing hashes the full system-message content and
+hard-routes any matching hash to whichever single node last served it, for
+the configured `ttl_seconds` — bypassing Smart/Thermal/Load-Balanced routing
+entirely on a cache hit.** If every worker sends an identical system prompt,
+every request hashes identically, so **all of them get pinned to one node**,
+no matter how many workers you run or how many nodes are in your cluster.
+Observed directly in production: with dozens of concurrent workers running
+against an identical system prompt, `docker logs` showed a continuous
+stream of `Prefix KV-cache hit ... routing to warm cache node 'X'` lines —
+one single node handling 100% of the traffic — while the rest of the
+cluster sat idle. Worker count alone did not change this; it only changed
+how deep a queue built up on that one node.
+
+**Fix — key your system prompt by whatever natural category your workload
+already has** (a tenant/customer ID, a document category, a topic label, a
+dataset partition — anything that's already meaningful to the job, not an
+arbitrary cache-buster). Append or interpolate that value into the system
+prompt so it becomes part of what gets hashed:
+
+```
+You are processing items of category: {category}.
+...rest of your fixed system prompt...
+```
+
+This turns one global cache bucket into one bucket **per category**:
+- Different categories now hash differently and spread across the cluster
+  naturally, letting Smart/Thermal/Load-Balanced routing actually engage
+  for that traffic instead of being permanently short-circuited by a single
+  cache entry.
+- Same-category requests still share one warm cache — arguably a *better*
+  fit for this feature than a random cache-buster, since same-category
+  items in most real workloads genuinely repeat vocabulary/entities/jargon,
+  so there's real token-level prefix reuse to be had.
+
+Verified immediately after applying this pattern in production: router
+logs went from a wall of identical `Prefix KV-cache hit` lines pointing at
+one node, to real `Smart routing selected node ... (active: N, temp: X°C)`
+entries spread across the full node pool — the previously-idle nodes
+started receiving traffic for the first time, with per-node active-request
+counts climbing into the high single digits (confirming each node's own
+continuous batching absorbs many concurrent requests, not just one) and
+zero errors across a scale-up from single digits to 50 concurrent workers.
+
+---
+
 ## 🛠️ API Support
 
 The router functions as a drop-in replacement for standard OpenAI client configurations (e.g., in IntelliJ IDEA, Continue.dev, Cursor, or Open WebUI):
