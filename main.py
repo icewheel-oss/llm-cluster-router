@@ -228,7 +228,11 @@ async def fetch_node_temperature(node: Dict[str, str]) -> float:
         if resp.status_code == 200:
             temps = []
             for line in resp.text.splitlines():
-                if line.startswith("node_hwmon_temp_celsius{") or line.startswith("node_thermal_zone_temp{"):
+                if line.startswith("node_hwmon_temp_celsius{") or line.startswith("node_thermal_zone_temp{") or line.startswith("DCGM_FI_DEV_GPU_TEMP") or line.startswith("nvidia_smi_temperature_celsius"):
+                    # Ignore storage NVMe, Wi-Fi, and NIC PHY sensors so routing isolates GPU/SoC core heat
+                    line_lower = line.lower()
+                    if "nvme" in line_lower or "wifi" in line_lower or "phy" in line_lower:
+                        continue
                     try:
                         val = float(line.split()[-1])
                         # Filter out invalid sensor sentinel values (e.g. >150 or <=0)
