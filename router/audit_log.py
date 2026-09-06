@@ -6,7 +6,7 @@ import base64
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 import httpx
@@ -172,7 +172,11 @@ async def stream_and_log(
                 pass
 
         log_entry = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            # utcnow() is deprecated; this replicates its exact output shape
+            # (naive isoformat + "Z") from a timezone-aware call instead, so
+            # downstream consumers (Elasticsearch's date field mapping, any
+            # existing log parser) see byte-identical timestamps.
+            "timestamp": datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z",
             "client_ip": client_ip,
             "auth_user": auth_user,
             "model": requested_model,
