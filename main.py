@@ -16,7 +16,7 @@ from typing import Dict, List, Any
 
 import httpx
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 # Setup logging
@@ -33,6 +33,15 @@ NODE_MODELS_CACHE: Dict[str, List[str]] = {}
 ACTIVE_REQUESTS: Dict[str, int] = {}
 CACHE_LOCK = asyncio.Lock()
 LAST_CONFIG_MTIME: float = 0.0
+try:
+    from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
+    ROUTER_KV_CACHE_BYPASS_COOLING = Counter('router_kv_cache_bypass_cooling_total', 'Total KV-cache hits bypassed for cooling at 70C warning threshold', ['node'])
+    ROUTER_THERMAL_REROUTES_COOLEST = Counter('router_thermal_reroutes_coolest_total', 'Total requests rerouted to coolest node when candidate nodes exceed warning temp', ['node'])
+    ROUTER_THERMAL_CRITICAL_HARD_BLOCKS = Counter('router_thermal_critical_hard_blocks_total', 'Total hard blocks triggered at 80C critical thermal ceiling', ['node'])
+    ROUTER_THERMAL_EVENTS = Counter('router_thermal_events_total', 'Total thermal routing intervention events', ['event_type'])
+    HAS_PROMETHEUS = True
+except ImportError:
+    HAS_PROMETHEUS = False
 
 
 def increment_active_requests(node_name: str):
@@ -1173,6 +1182,9 @@ async def handle_llm_request(request: Request):
             eligible_nodes = cool_and_warm_nodes
         else:
             logger.warning(f"All eligible nodes for '{requested_model}' exceed critical thermal limit ({critical_temp}°C). Routing to coolest available.")
+            if HAS_PROMETHEUS:
+                ROUTER_THERMAL_CRITICAL_HARD_BLOCKS.labels(node="all_critical").inc()
+                ROUTER_THERMAL_EVENTS.labels(event_type="Critical Hard Block (80°C)").inc()
 
     # STAGE 2: Prefix Cache Routing Check (With Thermal Warning Check)
     prefix_matched_node = None
@@ -1182,6 +1194,9 @@ async def handle_llm_request(request: Request):
                 node_temp = NODE_TEMP_CACHE.get(n["name"], 0)
                 if thermal_enabled and thermal_over_kv and node_temp >= warning_temp:
                     logger.info(f"Bypassing KV-cache hit for node '{n['name']}' because temp ({node_temp:.1f}°C) exceeds warning threshold ({warning_temp}°C) to allow cooling.")
+                    if HAS_PROMETHEUS:
+                        ROUTER_KV_CACHE_BYPASS_COOLING.labels(node=n['name']).inc()
+                        ROUTER_THERMAL_EVENTS.labels(event_type="KV-Cache Bypass (70°C)").inc()
                 else:
                     prefix_matched_node = n
                 break
@@ -1241,6 +1256,9 @@ async def handle_llm_request(request: Request):
                     candidate_nodes = cool_nodes
                 else:
                     logger.warning(f"All candidate nodes for '{requested_model}' exceed warning temp ({warning_temp}°C). Routing to coolest available.")
+                    if HAS_PROMETHEUS:
+                        ROUTER_THERMAL_REROUTES_COOLEST.labels(node="all_warning").inc()
+                        ROUTER_THERMAL_EVENTS.labels(event_type="Coolest-Node Reroute").inc()
 
             # Sort by active requests, then node priority (lower = higher priority), then lower temperature
             selected_node = min(
@@ -1302,3 +1320,17 @@ async def handle_llm_request(request: Request):
 async def health():
     """Liveness check for the router proxy itself."""
     return {"status": "healthy"}
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus scrape endpoint for the router's own thermal-routing
+    counters (router_kv_cache_bypass_cooling_total, router_thermal_
+    reroutes_coolest_total, router_thermal_critical_hard_blocks_total,
+    router_thermal_events_total) — see handle_llm_request's thermal
+    routing stages for where each one increments. Returns an empty
+    Prometheus-format body (200, not an error) if prometheus_client isn't
+    installed, so a missing optional dependency never breaks scraping."""
+    if not HAS_PROMETHEUS:
+        return Response(content="", media_type="text/plain; version=0.0.4; charset=utf-8")
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
