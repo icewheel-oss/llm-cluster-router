@@ -197,6 +197,41 @@ zero errors across a scale-up from single digits to 50 concurrent workers.
 
 ---
 
+## 🔌 Pluggable Routing Strategies
+
+`routing.mode` in `config.yaml` selects which strategy picks a node from the pool that's already survived model-availability and thermal filtering. Three ship built-in: `smart` (default — session-sticky if a header is present, otherwise least-loaded with context-window and thermal awareness), `sticky` (always session/user/IP-hash based), `random`.
+
+**Switching between these, or tuning any strategy's own config (e.g. `routing.sticky_header`), is fully hot-reloadable** — edit `config.yaml`, and the existing config-reload mechanism (background poll, or `POST /_router/reload`) picks it up with zero restart, since `routing_config` is read fresh from `CONFIG` on every request.
+
+**Adding a genuinely new strategy** — without forking this project — means implementing one function and pointing an env var at it:
+
+```python
+# my_custom_strategy.py, anywhere on the Python path
+from router.strategies import RoutingContext, register_strategy
+
+@register_strategy("least-tokens-queued")
+def select_node(ctx: RoutingContext) -> dict:
+    ...  # ctx.eligible_nodes, ctx.requested_model, ctx.headers, etc.
+    return chosen_node
+```
+
+```yaml
+# docker-compose.yml
+environment:
+  - LLM_ROUTER_EXTRA_STRATEGY_MODULES=my_custom_strategy
+```
+```yaml
+# config.yaml
+routing:
+  mode: least-tokens-queued
+```
+
+Being honest about what this does and doesn't buy you: registering brand-new *code* for the first time still needs one process start (no framework safely hot-loads arbitrary new Python into a running process) — but that's the only time a restart is needed. Every day after that, switching modes or tuning knobs is a plain config edit.
+
+See `router/strategies/` for the three built-ins as reference implementations, and `router/strategies/__init__.py` for the full registry mechanism.
+
+---
+
 ## 🛠️ API Support
 
 The router functions as a drop-in replacement for standard OpenAI client configurations (e.g., in IntelliJ IDEA, Continue.dev, Cursor, or Open WebUI):
