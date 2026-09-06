@@ -29,3 +29,8 @@ services:
     environment:
       - CONFIG_PATH=config.yaml
       - PYTHONUNBUFFERED=1
+      # Optional: also push the audit log JSON directly over TCP to Logstash.
+      # Unset (default) just skips this — audit logs always go to stdout
+      # regardless. See observability/ for a reference Logstash pipeline.
+      # - LOGSTASH_HOST=logstash
+      # - LOGSTASH_PORT=5044
