@@ -1,6 +1,10 @@
 # Copyright (c) 2026 Rohit Khatkar
 # Licensed under the MIT License (see LICENSE for details)
 
+"""Always session-affine, unlike "smart" (which only goes sticky when a
+session header is actually present). Useful when every request should
+land on a consistent node for a given caller, even with no explicit
+session header, by falling back to auth-user then client-IP."""
 import zlib
 
 from router.logging_setup import logger

@@ -1,6 +1,15 @@
 # Copyright (c) 2026 Rohit Khatkar
 # Licensed under the MIT License (see LICENSE for details)
 
+"""Thermal-aware routing: temperature polling plus the two ALWAYS-ON
+pipeline stages (critical hard-block, prefix-affinity cooling override)
+that run in router/app.py's handle_llm_request before any routing
+strategy sees the node list. These aren't strategy-specific -- every
+strategy operates on whatever eligible_nodes survives Stage 1, and
+Stage 2 can hand back an already-decided node before a strategy even
+runs. filter_cool_nodes() is a third, opt-in helper any strategy can
+call (only "smart" does today).
+"""
 from typing import Dict, List, Optional
 
 from router import metrics, state

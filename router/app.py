@@ -1,6 +1,14 @@
 # Copyright (c) 2026 Rohit Khatkar
 # Licensed under the MIT License (see LICENSE for details)
 
+"""The FastAPI app, its routes, and the request pipeline that ties every
+other router/ module together. handle_llm_request is the heart of it --
+read its own docstring/body for the exact stage order (sanitize -> model
+resolution -> thermal Stage 1 -> prefix-affinity Stage 2 -> routing
+strategy -> record affinity -> forward). Nothing here implements routing
+logic itself; it orchestrates calls into state/thermal/prefix_cache/
+model_matching/sanitize/strategies/proxy, each of which owns one concern.
+"""
 import asyncio
 import importlib
 import json
@@ -70,6 +78,11 @@ async def update_models_cache_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """FastAPI startup/shutdown hook: loads config.yaml, initializes the
+    shared httpx client (state.CLIENT -- every node/thermal HTTP call in
+    this codebase reuses this one connection-pooled client), and starts
+    the background node/thermal polling loop. Closes the client on
+    shutdown."""
     state.CONFIG = state.load_config()
     state.ACTIVE_REQUESTS = {node["name"]: 0 for node in state.CONFIG.get("nodes", [])}
     state.CONFIG.setdefault("timeouts", {})
@@ -146,6 +159,11 @@ async def root_v1_info():
 
 
 def _merge_model_entry(merged_models: dict, m) -> None:
+    """Adds one node's reported model into the running merged_models dict
+    that get_models() builds across all nodes, resolving a fallback
+    context-window/max_model_len from the capabilities catalog if a node
+    didn't report one, and keeping the MAXIMUM context length seen for a
+    given model_id across every node currently serving it."""
     model_id = m.get("id") if isinstance(m, dict) else str(m)
     if not model_id:
         return

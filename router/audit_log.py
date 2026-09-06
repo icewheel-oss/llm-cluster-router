@@ -1,6 +1,13 @@
 # Copyright (c) 2026 Rohit Khatkar
 # Licensed under the MIT License (see LICENSE for details)
 
+"""Per-request completion logging. `audit_logger` (a distinct logger from
+the general `logger` in router/logging_setup.py) always gets one
+AUDIT_LOG JSON line per request on stdout -- regardless of whether
+LOGSTASH_HOST is set. That env var only controls the OPTIONAL, additional
+TCP push in send_log_to_logstash(); see the README's "Observability &
+Auditing" section for the full field list and how to wire up ELK.
+"""
 import asyncio
 import base64
 import json
@@ -19,6 +26,10 @@ LOGSTASH_PORT = int(os.getenv("LOGSTASH_PORT", "5044"))
 
 
 def parse_auth_user(headers: Dict[str, str]) -> str:
+    """Extracts the username from an HTTP Basic Authorization header, if
+    present -- returns "anonymous" otherwise. This is purely for
+    attribution in audit logs / rate-limit keys; it doesn't gate access
+    (no credential verification happens here)."""
     auth = headers.get("authorization", "")
     if auth.startswith("Basic "):
         try:
@@ -30,6 +41,10 @@ def parse_auth_user(headers: Dict[str, str]) -> str:
 
 
 def parse_request_prompt(content: bytes) -> str:
+    """Pulls the last user-role message's content out of a raw request
+    body, for the audit log's "prompt" field -- best-effort, returns ""
+    on any parse failure rather than raising (this runs on every
+    request, before we know the body is even valid JSON)."""
     try:
         data = json.loads(content)
         messages = data.get("messages", [])
@@ -43,6 +58,11 @@ def parse_request_prompt(content: bytes) -> str:
 
 
 def parse_trace_id(headers: Dict[str, str]) -> Optional[str]:
+    """Resolves a correlation ID for the audit log: the W3C `traceparent`
+    header's trace-id segment if present, else `X-Request-ID`, else None.
+    Lets a caller correlate a request across their own logs and this
+    router's audit trail without this router needing to know anything
+    about their tracing setup."""
     # Check traceparent (W3C standard format: version-trace_id-parent_id-trace_flags)
     traceparent = headers.get("traceparent")
     if not traceparent:
@@ -69,6 +89,12 @@ def parse_trace_id(headers: Dict[str, str]) -> Optional[str]:
 
 
 async def send_log_to_logstash(log_entry: dict) -> None:
+    """Optional, best-effort TCP push of the same log_entry stream_and_log
+    already wrote to stdout. No-ops if LOGSTASH_HOST is unset (the
+    default); fails soft with a warning on any connection error -- a
+    down or misconfigured Logstash never affects request handling, since
+    this is fired via `asyncio.create_task` and never awaited by the
+    request path."""
     if not LOGSTASH_HOST:
         return
     log_entry["app_name"] = "llm-cluster-router"
@@ -99,6 +125,13 @@ async def stream_and_log(
     original_model: str = None,
     trace_id: str = None
 ):
+    """Wraps a backend node's streamed response: yields each chunk on to
+    the client immediately (this IS the actual response body FastAPI
+    streams out), while also buffering it to reconstruct the full
+    response text/token counts once the stream ends, for the AUDIT_LOG
+    entry. Runs `state.decrement_active_requests` in its `finally` block
+    -- this is the one place a request's "active" count actually clears,
+    whether it finished normally or was cancelled by the client."""
     full_response_bytes = []
     try:
         async for chunk in resp.aiter_bytes():

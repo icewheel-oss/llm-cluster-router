@@ -1,6 +1,10 @@
 # Copyright (c) 2026 Rohit Khatkar
 # Licensed under the MIT License (see LICENSE for details)
 
+"""Per-client (auth user, else IP) fixed-window rate limiting. Disabled
+by default (rate_limiting.enabled in config.yaml) -- runs before any
+model resolution or routing, as the very first gate in
+router/app.py's handle_llm_request."""
 import time
 from typing import Dict, List
 

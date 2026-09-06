@@ -1,6 +1,14 @@
 # Copyright (c) 2026 Rohit Khatkar
 # Licensed under the MIT License (see LICENSE for details)
 
+"""Defensive request-payload fixups for malformed OpenAI-style tool/
+function-calling payloads that would otherwise crash vLLM's Jinja chat
+template (missing "parameters", stringified JSON where a dict is
+expected, invalid tool_call arguments). Mutates the parsed json_data /
+messages in place and reports whether it changed anything, so
+router/app.py knows whether to re-serialize the request body before
+forwarding it.
+"""
 import json
 
 from router.logging_setup import logger

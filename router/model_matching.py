@@ -1,6 +1,14 @@
 # Copyright (c) 2026 Rohit Khatkar
 # Licensed under the MIT License (see LICENSE for details)
 
+"""Model-name resolution (exact/alias/fuzzy matching between what a
+client requests and what a node actually reports serving) and the
+capabilities catalog (vision/tool-calling/structured-output support per
+model, used to auto-reroute a request whose requirements the requested
+model can't meet). Independent of routing strategy -- this runs before
+node selection, to narrow down *which model* a request should target,
+not *which node*.
+"""
 import re
 from typing import List
 

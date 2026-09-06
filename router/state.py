@@ -30,14 +30,22 @@ CACHE_LOCK = asyncio.Lock()
 
 
 def increment_active_requests(node_name: str) -> None:
+    """Called by proxy.forward_request when a request starts -- the
+    "smart" strategy reads ACTIVE_REQUESTS to prefer less-loaded nodes."""
     ACTIVE_REQUESTS[node_name] = ACTIVE_REQUESTS.get(node_name, 0) + 1
 
 
 def decrement_active_requests(node_name: str) -> None:
+    """Called when a request finishes (audit_log.stream_and_log) or fails
+    to even start (proxy.forward_request's error path)."""
     ACTIVE_REQUESTS[node_name] = max(0, ACTIVE_REQUESTS.get(node_name, 0) - 1)
 
 
 def load_config() -> Dict[str, Any]:
+    """Reads config.yaml (path from CONFIG_PATH env var, default
+    "config.yaml") fresh from disk. Called once at startup (router/app.py's
+    lifespan) and again by reload_config_if_changed() -- this function
+    itself does no comparison/caching, it always re-reads."""
     global LAST_CONFIG_MTIME
     config_path = os.getenv("CONFIG_PATH", "config.yaml")
     if not os.path.exists(config_path):

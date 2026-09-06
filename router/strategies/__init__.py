@@ -63,12 +63,19 @@ def register_strategy(name: str):
 
 
 def get_strategy(name: str) -> RoutingStrategy:
+    """Looks up a strategy by its `routing.mode` name. Raises ValueError
+    (listing what IS registered) rather than silently falling back to a
+    default -- an unrecognized mode should fail loudly at request time,
+    not quietly misroute every request."""
     if name not in _REGISTRY:
         raise ValueError(f"Unknown routing.mode '{name}'. Registered strategies: {sorted(_REGISTRY)}")
     return _REGISTRY[name]
 
 
 def registered_strategy_names() -> List[str]:
+    """All currently-registered strategy names, sorted. Surfaced in
+    `POST /_router/reload`'s response so an operator can confirm a
+    newly-added extra strategy module actually loaded."""
     return sorted(_REGISTRY)
 
 

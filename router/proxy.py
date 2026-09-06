@@ -1,6 +1,11 @@
 # Copyright (c) 2026 Rohit Khatkar
 # Licensed under the MIT License (see LICENSE for details)
 
+"""The actual reverse-proxy hop: once router/app.py has picked a node
+(via prefix affinity or a routing strategy), this is what sends the
+request there, fails over from the node's primary interface to its
+backup if configured, and wraps the response in the streaming
+audit-logging wrapper (router/audit_log.stream_and_log)."""
 import time
 from typing import Dict
 

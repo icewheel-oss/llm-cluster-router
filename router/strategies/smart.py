@@ -1,6 +1,11 @@
 # Copyright (c) 2026 Rohit Khatkar
 # Licensed under the MIT License (see LICENSE for details)
 
+"""The default strategy (routing.mode: smart) -- opt-in session
+affinity if the caller sends a sticky header, otherwise least-loaded
+selection among nodes that fit the request's estimated context length
+and aren't currently running hot. The most involved of the three
+built-ins; see select_node()'s docstring for the exact decision order."""
 import zlib
 
 from router import state, thermal

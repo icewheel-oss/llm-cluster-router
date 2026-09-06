@@ -1,6 +1,12 @@
 # Copyright (c) 2026 Rohit Khatkar
 # Licensed under the MIT License (see LICENSE for details)
 
+"""Queries a backend node's own /v1/models endpoint to find out which
+models it currently has loaded. Called both by router/app.py's periodic
+background poll (populates state.NODE_MODELS_CACHE) and, on a cache
+miss, synchronously from the request path as a real-time fallback in
+case a model was just loaded and the cache hasn't caught up yet.
+"""
 from typing import Any, Dict, List
 
 import httpx
