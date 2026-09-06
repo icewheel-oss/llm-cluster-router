@@ -175,3 +175,27 @@ def check_and_reroute_capabilities(json_data: dict) -> bool:
         return True
 
     return False
+
+
+def estimate_request_length(prompt: str, json_data: dict) -> int:
+    """Rough token-count estimate for a request: ~3.2 chars/token for the
+    prompt, plus the requested max_tokens (default 2048) for generation.
+    Used both by the "smart" strategy's own context-window filtering and
+    by Stage 2's prefix-affinity check (router/thermal.py) -- a single
+    shared estimate so the two can't silently drift apart."""
+    est_prompt_tokens = int(len(prompt) / 3.2) if prompt else 0
+    max_gen_tokens = json_data.get("max_tokens", 2048) if isinstance(json_data, dict) else 2048
+    return est_prompt_tokens + max_gen_tokens
+
+
+def node_context_window(node_name: str, requested_model: str) -> int:
+    """The max_model_len/context_window state.NODE_MODELS_CACHE reports
+    for requested_model on node_name, or 0 if unknown. 0 means "don't
+    filter on this" to callers, not "zero capacity" -- matches this
+    codebase's existing convention (see the "smart" strategy's original
+    inline version of this same lookup)."""
+    for m in state.NODE_MODELS_CACHE.get(node_name, []):
+        m_id = m.get("id") if isinstance(m, dict) else str(m)
+        if m_id == requested_model:
+            return m.get("max_model_len", m.get("context_window", 0)) if isinstance(m, dict) else 0
+    return 0

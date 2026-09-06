@@ -89,6 +89,13 @@ thermal_routing:
   critical_temp_celsius: 80.0
   enabled: true
   exporter_port: 9100
+  # If a prefix-cache-warm node has this many more active requests than
+  # another eligible node right now, bypass the affinity match and let the
+  # configured routing strategy pick instead. Guards against a node that
+  # rarely trips the warning-temp check (e.g. one that runs cooler than
+  # the rest of the cluster) permanently absorbing a disproportionate
+  # share of traffic just because it's never forced to cool down. 0 disables.
+  max_affinity_load_imbalance: 3
   thermal_priority_over_kv_cache: true
   warning_temp_celsius: 70.0
 timeouts:

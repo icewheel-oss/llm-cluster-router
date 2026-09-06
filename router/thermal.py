@@ -12,7 +12,7 @@ call (only "smart" does today).
 """
 from typing import Dict, List, Optional
 
-from router import metrics, state
+from router import metrics, model_matching, state
 from router.logging_setup import logger
 
 
@@ -81,14 +81,36 @@ def apply_stage1_critical_filter(eligible_nodes: List[dict], requested_model: st
     return eligible_nodes
 
 
-def apply_stage2_prefix_affinity(cached_node_name: Optional[str], eligible_nodes: List[dict]) -> Optional[dict]:
+def apply_stage2_prefix_affinity(
+    cached_node_name: Optional[str],
+    eligible_nodes: List[dict],
+    requested_model: str,
+    est_request_len: int,
+) -> Optional[dict]:
     """STAGE 2: if a prefix-hash match named a node that's still eligible,
-    normally route back to it to keep its KV cache warm -- UNLESS thermal
-    routing has priority over KV-cache warmth and that node is at/above
-    the warning threshold, in which case the cache hit is deliberately
-    bypassed to let it cool. Returns the matched node dict, or None if
-    there was no match / it was bypassed (the caller then falls through
-    to whichever routing strategy is configured)."""
+    normally route back to it to keep its KV cache warm -- UNLESS any of
+    three conditions holds, in which case the cache hit is deliberately
+    bypassed and the caller falls through to whichever routing strategy
+    is configured:
+
+    1. Thermal: the node is at/above the warning threshold (original
+       behavior, protects hardware).
+    2. Context: the node's reported context window is smaller than this
+       request's estimated length -- closes a real gap where the
+       affinity shortcut used to skip the context check the "smart"
+       strategy's own fallback path already does.
+    3. Load imbalance: the node is running significantly more concurrent
+       requests than another eligible node right now
+       (thermal_routing.max_affinity_load_imbalance, default 3; 0
+       disables this check). Added after live data showed one
+       consistently-cool node (never once tripping the thermal check)
+       absorbing a hugely disproportionate share of traffic purely
+       because it never got the chance to cool down and get bypassed --
+       this makes "significantly worse than an available alternative
+       right now" its own explicit bypass reason, independent of heat.
+
+    Returns the matched node dict, or None if there was no match / it
+    was bypassed for any of the above."""
     if not cached_node_name:
         return None
 
@@ -96,10 +118,12 @@ def apply_stage2_prefix_affinity(cached_node_name: Optional[str], eligible_nodes
     thermal_enabled = thermal_cfg.get("enabled", True)
     warning_temp = float(thermal_cfg.get("warning_temp_celsius", 70.0))
     thermal_over_kv = thermal_cfg.get("thermal_priority_over_kv_cache", True)
+    max_imbalance = thermal_cfg.get("max_affinity_load_imbalance", 3)
 
     for n in eligible_nodes:
         if n["name"] != cached_node_name:
             continue
+
         node_temp = state.NODE_TEMP_CACHE.get(n["name"], 0)
         if thermal_enabled and thermal_over_kv and node_temp >= warning_temp:
             logger.info(f"Bypassing KV-cache hit for node '{n['name']}' because temp ({node_temp:.1f}°C) exceeds warning threshold ({warning_temp}°C) to allow cooling.")
@@ -107,6 +131,22 @@ def apply_stage2_prefix_affinity(cached_node_name: Optional[str], eligible_nodes
                 metrics.ROUTER_KV_CACHE_BYPASS_COOLING.labels(node=n['name']).inc()
                 metrics.ROUTER_THERMAL_EVENTS.labels(event_type="KV-Cache Bypass (70°C)").inc()
             return None
+
+        node_ctx = model_matching.node_context_window(n["name"], requested_model)
+        if node_ctx > 0 and est_request_len > node_ctx:
+            logger.info(f"Bypassing KV-cache hit for node '{n['name']}': est request len ({est_request_len}) exceeds its context limit ({node_ctx}).")
+            return None
+
+        if max_imbalance > 0:
+            matched_active = state.ACTIVE_REQUESTS.get(n["name"], 0)
+            other_actives = [state.ACTIVE_REQUESTS.get(o["name"], 0) for o in eligible_nodes if o["name"] != n["name"]]
+            if other_actives and (matched_active - min(other_actives)) >= max_imbalance:
+                logger.info(f"Bypassing KV-cache hit for node '{n['name']}': {matched_active} active requests vs {min(other_actives)} on the least-loaded eligible node (imbalance >= {max_imbalance}).")
+                if metrics.HAS_PROMETHEUS:
+                    metrics.ROUTER_KV_CACHE_BYPASS_LOAD_IMBALANCE.labels(node=n['name']).inc()
+                    metrics.ROUTER_THERMAL_EVENTS.labels(event_type="KV-Cache Bypass (Load Imbalance)").inc()
+                return None
+
         return n
     return None
 

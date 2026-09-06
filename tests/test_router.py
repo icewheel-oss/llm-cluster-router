@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from router import app as app_module
-from router import audit_log, model_matching, node_discovery, prefix_cache, proxy, rate_limit, sanitize, state, strategies
+from router import audit_log, model_matching, node_discovery, prefix_cache, proxy, rate_limit, sanitize, state, strategies, thermal
 from router.app import app
 
 # Apply asyncio marker to all tests in this file
@@ -463,6 +463,83 @@ async def test_prefix_cache_recorded_regardless_of_strategy(mocker, mode):
     args, kwargs = proxy.forward_request.call_args
     recorded_node, _ = prefix_cache.PREFIX_CACHE[expected_hash]
     assert recorded_node == kwargs["node"]["name"]
+
+
+def test_stage2_affinity_bypasses_when_context_too_small():
+    """A warm node whose context window is smaller than the estimated
+    request length must be bypassed, even if it's thermally fine --
+    closes the gap where Stage 2 used to skip the check the "smart"
+    strategy's own fallback path already did."""
+    state.NODE_MODELS_CACHE = {
+        "small-node": [{"id": "test-model", "max_model_len": 4096}],
+        "big-node": [{"id": "test-model", "max_model_len": 262144}],
+    }
+    state.NODE_TEMP_CACHE = {"small-node": 40.0}
+    state.ACTIVE_REQUESTS = {"small-node": 0, "big-node": 0}
+    eligible_nodes = [{"name": "small-node"}, {"name": "big-node"}]
+
+    result = thermal.apply_stage2_prefix_affinity(
+        "small-node", eligible_nodes, "test-model", est_request_len=8000
+    )
+    assert result is None
+
+
+def test_stage2_affinity_returns_node_when_context_fits():
+    """Regression check: a warm node that DOES have enough context, and
+    isn't hot or overloaded, must still be returned directly (the whole
+    point of prefix affinity)."""
+    state.NODE_MODELS_CACHE = {
+        "small-node": [{"id": "test-model", "max_model_len": 4096}],
+    }
+    state.NODE_TEMP_CACHE = {"small-node": 40.0}
+    state.ACTIVE_REQUESTS = {"small-node": 0}
+    eligible_nodes = [{"name": "small-node"}]
+
+    result = thermal.apply_stage2_prefix_affinity(
+        "small-node", eligible_nodes, "test-model", est_request_len=2000
+    )
+    assert result == {"name": "small-node"}
+
+
+def test_stage2_affinity_bypasses_on_load_imbalance():
+    """A warm node running significantly more active requests than
+    another eligible node must be bypassed -- this is the actual fix for
+    the real imbalance found live (one consistently-cool node absorbing
+    a hugely disproportionate share of traffic because it never tripped
+    the thermal check)."""
+    state.CONFIG.setdefault("thermal_routing", {})
+    state.CONFIG["thermal_routing"]["max_affinity_load_imbalance"] = 3
+    state.NODE_MODELS_CACHE = {
+        "warm-node": [{"id": "test-model", "max_model_len": 262144}],
+        "idle-node": [{"id": "test-model", "max_model_len": 262144}],
+    }
+    state.NODE_TEMP_CACHE = {"warm-node": 40.0}
+    state.ACTIVE_REQUESTS = {"warm-node": 8, "idle-node": 1}
+    eligible_nodes = [{"name": "warm-node"}, {"name": "idle-node"}]
+
+    result = thermal.apply_stage2_prefix_affinity(
+        "warm-node", eligible_nodes, "test-model", est_request_len=2000
+    )
+    assert result is None
+
+
+def test_stage2_affinity_load_imbalance_disabled_by_zero():
+    """max_affinity_load_imbalance: 0 must disable the check entirely --
+    the warm node is returned even with a large active-request gap."""
+    state.CONFIG.setdefault("thermal_routing", {})
+    state.CONFIG["thermal_routing"]["max_affinity_load_imbalance"] = 0
+    state.NODE_MODELS_CACHE = {
+        "warm-node": [{"id": "test-model", "max_model_len": 262144}],
+        "idle-node": [{"id": "test-model", "max_model_len": 262144}],
+    }
+    state.NODE_TEMP_CACHE = {"warm-node": 40.0}
+    state.ACTIVE_REQUESTS = {"warm-node": 20, "idle-node": 0}
+    eligible_nodes = [{"name": "warm-node"}, {"name": "idle-node"}]
+
+    result = thermal.apply_stage2_prefix_affinity(
+        "warm-node", eligible_nodes, "test-model", est_request_len=2000
+    )
+    assert result == {"name": "warm-node"}
 
 
 def test_strategy_registry_has_builtins():

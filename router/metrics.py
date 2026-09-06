@@ -37,6 +37,14 @@ try:
         '(does not guarantee the vLLM engine itself still had the KV blocks cached)',
         ['node'],
     )
+    ROUTER_KV_CACHE_BYPASS_LOAD_IMBALANCE = Counter(
+        'router_kv_cache_bypass_load_imbalance_total',
+        'Total KV-cache hits bypassed because the warm node was significantly more '
+        'loaded than another eligible node (thermal_routing.max_affinity_load_imbalance) '
+        '-- kept separate from router_kv_cache_bypass_cooling_total so "bypassed for '
+        'heat" and "bypassed for load fairness" can be told apart',
+        ['node'],
+    )
     HAS_PROMETHEUS = True
 except ImportError:
     HAS_PROMETHEUS = False

@@ -298,10 +298,11 @@ async def handle_llm_request(request: Request):
     # STAGE 1: critical thermal hard-block -- runs regardless of strategy.
     eligible_nodes = thermal.apply_stage1_critical_filter(eligible_nodes, requested_model)
 
-    # STAGE 2: prefix-cache affinity (with thermal-cooling override) -- also
-    # runs regardless of strategy, since it's about correctness/performance
-    # of caching, not "which strategy is configured."
-    selected_node = thermal.apply_stage2_prefix_affinity(cached_prefix_node, eligible_nodes)
+    # STAGE 2: prefix-cache affinity (with thermal/context/load-imbalance
+    # overrides) -- also runs regardless of strategy, since it's about
+    # correctness/performance of caching, not "which strategy is configured."
+    est_request_len = model_matching.estimate_request_length(prompt, json_data)
+    selected_node = thermal.apply_stage2_prefix_affinity(cached_prefix_node, eligible_nodes, requested_model, est_request_len)
     if selected_node is not None:
         if metrics.HAS_PROMETHEUS:
             metrics.ROUTER_PREFIX_AFFINITY_ROUTED.labels(node=selected_node['name']).inc()

@@ -8,7 +8,7 @@ and aren't currently running hot. The most involved of the three
 built-ins; see select_node()'s docstring for the exact decision order."""
 import zlib
 
-from router import state, thermal
+from router import model_matching, state, thermal
 from router.logging_setup import logger
 from router.strategies import RoutingContext, find_header_case_insensitive, register_strategy
 
@@ -31,23 +31,14 @@ def select_node(ctx: RoutingContext) -> dict:
         return selected_node
 
     # Context Window & Thermal-aware routing
-    # Estimate requested token length (approx 3.2 chars per token for safe estimation + max_tokens requested)
-    est_prompt_tokens = int(len(ctx.prompt) / 3.2) if ctx.prompt else 0
-    max_gen_tokens = ctx.json_data.get("max_tokens", 2048) if isinstance(ctx.json_data, dict) else 2048
-    est_total_request_len = est_prompt_tokens + max_gen_tokens
+    est_total_request_len = model_matching.estimate_request_length(ctx.prompt, ctx.json_data)
 
     candidate_nodes = list(ctx.eligible_nodes)
 
     # Filter nodes by context window capacity if max_model_len reported
     context_capable_nodes = []
     for n in candidate_nodes:
-        node_models = state.NODE_MODELS_CACHE.get(n["name"], [])
-        node_ctx = 0
-        for m in node_models:
-            m_id = m.get("id") if isinstance(m, dict) else str(m)
-            if m_id == ctx.requested_model:
-                node_ctx = m.get("max_model_len", m.get("context_window", 0)) if isinstance(m, dict) else 0
-                break
+        node_ctx = model_matching.node_context_window(n["name"], ctx.requested_model)
         # If node reports max_model_len and it's smaller than estimated request, skip node
         if node_ctx > 0 and est_total_request_len > node_ctx:
             logger.info(f"Skipping node '{n['name']}' for '{ctx.requested_model}': est request len ({est_total_request_len}) exceeds node context limit ({node_ctx})")
