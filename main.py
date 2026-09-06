@@ -39,6 +39,7 @@ try:
     ROUTER_THERMAL_REROUTES_COOLEST = Counter('router_thermal_reroutes_coolest_total', 'Total requests rerouted to coolest node when candidate nodes exceed warning temp', ['node'])
     ROUTER_THERMAL_CRITICAL_HARD_BLOCKS = Counter('router_thermal_critical_hard_blocks_total', 'Total hard blocks triggered at 80C critical thermal ceiling', ['node'])
     ROUTER_THERMAL_EVENTS = Counter('router_thermal_events_total', 'Total thermal routing intervention events', ['event_type'])
+    ROUTER_PREFIX_AFFINITY_ROUTED = Counter('router_prefix_affinity_routed_total', 'Total requests routed to a node based on prefix-hash affinity (does not guarantee the vLLM engine itself still had the KV blocks cached)', ['node'])
     HAS_PROMETHEUS = True
 except ImportError:
     HAS_PROMETHEUS = False
@@ -1204,6 +1205,8 @@ async def handle_llm_request(request: Request):
     if prefix_matched_node:
         selected_node = prefix_matched_node
         logger.info(f"Prefix KV-cache hit for hash '{prefix_hash}'. Routing to warm cache node '{selected_node['name']}'")
+        if HAS_PROMETHEUS:
+            ROUTER_PREFIX_AFFINITY_ROUTED.labels(node=selected_node['name']).inc()
     elif routing_mode == "smart":
         # Check if a sticky key is present. If yes, route stickily. If not, route to least loaded.
         sticky_key = headers.get(sticky_header)
