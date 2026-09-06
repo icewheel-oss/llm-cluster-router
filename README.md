@@ -219,7 +219,18 @@ For production use, it is recommended to place the gateway behind a reverse prox
 
 ## 📊 Observability & Auditing
 
-The gateway outputs structured JSON logs for auditing completions. These logs can be piped directly over TCP to Logstash and indexed into Elasticsearch.
+The gateway outputs structured JSON logs for auditing completions. These logs go to stdout via standard Python logging either way, so any log shipper works (Filebeat, Promtail, `docker logs`, a CloudWatch/Datadog agent, ...) — you don't need Logstash specifically.
+
+If you do want the router to also push the same line directly over TCP to Logstash, set:
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `LOGSTASH_HOST` | *(unset)* | Logstash TCP host. Shipping is skipped entirely if unset — this is opt-in, not required. |
+| `LOGSTASH_PORT` | `5044` | Logstash TCP port. |
+
+Shipping is fire-and-forget and fails soft (a connection error is logged as a warning, never raised) — a missing or unreachable Logstash never affects request handling.
+
+See [`observability/`](./observability) for a runnable reference ELK stack (Elasticsearch + Logstash + Kibana) and the pipeline config it expects, matching the field names and index below.
 
 ### Log Payload Schema
 Every request writes a single-line JSON log (`AUDIT_LOG: {...}`) containing:
@@ -283,6 +294,25 @@ Inspect all completions handled by a specific cluster GPU node (e.g., node-4):
 node : "node-4"
 ```
 
+---
+
+## 📈 Metrics (Prometheus)
+
+`GET /metrics` exposes the router's own routing-decision counters in standard Prometheus exposition format — independent of the logging path above, and independent of any per-node vLLM engine's own `/metrics` (scrape those separately if you want token-level throughput/latency; this endpoint is only about what the *router* decided).
+
+Requires the optional `prometheus_client` dependency (already in `requirements.txt`). If it isn't installed, `/metrics` still returns `200` with an empty body rather than erroring — always safe to point a scraper at it.
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `router_thermal_events_total` | `event_type` | Every thermal routing intervention, by type (`KV-Cache Bypass (70°C)`, `Coolest-Node Reroute`, `Critical Hard Block (80°C)`). A single running total across types. |
+| `router_kv_cache_bypass_cooling_total` | `node` | Times a request's normally-warm node was skipped specifically to let it cool below the 70°C warning threshold. |
+| `router_thermal_reroutes_coolest_total` | `node` | Times every candidate node exceeded the warning threshold and the request was sent to whichever was coolest. |
+| `router_thermal_critical_hard_blocks_total` | `node` | Times a node was excluded from eligibility outright for exceeding the 80°C critical ceiling. |
+| `router_prefix_affinity_routed_total` | `node` | Times a request was routed to a node purely because its prompt's prefix hash matched a node used within `prefix_cache_routing.ttl_seconds`. **This is a routing decision, not a confirmed cache hit** — it doesn't guarantee the target vLLM engine still had the KV blocks resident. Compare against that engine's own `vllm:prefix_cache_hits_total` (a real token-level counter vLLM exposes natively) if you need to know whether affinity routing is actually translating into cache reuse, not just being attempted. |
+
+All labels here are low-cardinality (node names, a handful of event types) — safe to scrape at any interval without Prometheus cardinality concerns.
+
+See [`observability/prometheus.example.yaml`](./observability/prometheus.example.yaml) for a scrape config to merge into your own `prometheus.yml`.
 
 ---
 

@@ -1,0 +1,19 @@
+# Reference Prometheus scrape config for llm-cluster-router's /metrics
+# endpoint. See the README's "📈 Metrics (Prometheus)" section for what
+# each metric means. Requires `prometheus_client` to be installed in the
+# router's environment (it's an optional dependency — /metrics returns an
+# empty 200 response if it isn't, so scraping is always safe to enable).
+#
+# Merge this job into your own prometheus.yml's scrape_configs:, adjusting
+# the target to wherever llm-cluster-router is actually reachable from
+# your Prometheus instance (container name if they share a Docker network,
+# host:port otherwise).
+
+scrape_configs:
+  - job_name: 'llm-router'
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['llm-router:8000']
+        labels:
+          service: 'llm-cluster-router'
